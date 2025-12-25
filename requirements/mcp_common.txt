@@ -1,0 +1,5 @@
+# MCP common dependencies
+-r base.txt
+
+# FastMCP framework
+fastmcp>=2.0.0

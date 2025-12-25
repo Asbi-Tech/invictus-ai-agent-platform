@@ -1,0 +1,4 @@
+# Base dependencies shared across all packages
+pydantic>=2.9.0
+python-dotenv>=1.0.0
+structlog>=24.4.0

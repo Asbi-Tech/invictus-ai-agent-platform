@@ -1,0 +1,5 @@
+# MCP Clients server dependencies
+-r mcp_common.txt
+
+# Database connectivity
+pyodbc>=5.1.0

@@ -1,0 +1,9 @@
+# MCP Opportunities server dependencies
+-r mcp_common.txt
+
+# Database connectivity (adjust based on your DB)
+pyodbc>=5.1.0
+# Or use one of these alternatives:
+# pymssql>=2.2.0  # For SQL Server without ODBC
+# asyncpg>=0.29.0  # For PostgreSQL
+# aiomysql>=0.2.0  # For MySQL
