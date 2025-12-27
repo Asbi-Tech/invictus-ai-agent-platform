@@ -1,36 +1,49 @@
-"""Agent Core - LangGraph-based agent for Invictus AI."""
+"""Agent Core - LangGraph-based multi-agent platform for Invictus AI."""
 
-from agent_core.graph import compile_agent_graph, create_agent, create_agent_graph
-from agent_core.memory import CosmosDBCheckpointer
-from agent_core.state import (
-    AgentState,
-    Artifact,
-    DocumentSelection,
-    FieldDefinition,
-    HITLRequest,
-    IntentType,
-    PageContext,
-    StorageConfig,
-    ToolPolicy,
-    ToolResult,
+from agent_core.graph import (
+    compile_multi_agent_graph,
+    create_multi_agent_graph,
+    MultiAgentState,
 )
+from agent_core.graph.state import (
+    ClarificationQuestion,
+    DataRequirement,
+    ExecutionPlan,
+    IntentAnalysis,
+    PhaseTransition,
+    ReviewIssue,
+    ReviewResult,
+    SectionAssignment,
+    SectionPlan,
+    SourceLedger,
+    SourceRef,
+    SynthesizedInsights,
+    ToolUsage,
+    create_initial_state,
+)
+from agent_core.memory import CosmosDBCheckpointer
 
 __all__ = [
     # Graph
-    "create_agent_graph",
-    "compile_agent_graph",
-    "create_agent",
+    "create_multi_agent_graph",
+    "compile_multi_agent_graph",
     # Memory
     "CosmosDBCheckpointer",
-    # State models
-    "AgentState",
-    "IntentType",
-    "ToolPolicy",
-    "PageContext",
-    "StorageConfig",
-    "DocumentSelection",
-    "FieldDefinition",
-    "ToolResult",
-    "Artifact",
-    "HITLRequest",
+    # State
+    "MultiAgentState",
+    "create_initial_state",
+    # State types
+    "IntentAnalysis",
+    "ClarificationQuestion",
+    "SectionPlan",
+    "DataRequirement",
+    "ToolUsage",
+    "ExecutionPlan",
+    "SectionAssignment",
+    "SourceRef",
+    "ReviewIssue",
+    "ReviewResult",
+    "SourceLedger",
+    "PhaseTransition",
+    "SynthesizedInsights",
 ]

@@ -126,6 +126,16 @@ async def extract_fields(
     if system_instructions:
         request.system_instructions = system_instructions
 
+    # Log the request payload for debugging
+    logger.info(
+        "RAG Gateway request payload",
+        tenant_id=tenant_id,
+        doc_ids=doc_ids,
+        field_names=[f.name for f in fields],
+        field_instructions={f.name: f.instructions[:100] + "..." for f in fields},
+        storage_prefix=storage.base_prefix,
+    )
+
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             headers = {"Content-Type": "application/json"}
@@ -153,6 +163,13 @@ async def extract_fields(
             data = response.json()
             latency = (datetime.utcnow() - start_time).total_seconds() * 1000
 
+            # Log the raw response structure
+            logger.info(
+                "RAG Gateway raw response",
+                response_keys=list(data.keys()),
+                has_fields="fields" in data or "results" in data,
+            )
+
             # Parse the response
             extracted_fields = data.get("fields", data.get("results", {}))
 
@@ -161,6 +178,16 @@ async def extract_fields(
                 extracted_fields = {
                     field.get("name"): field.get("value") for field in extracted_fields
                 }
+
+            # Log extracted field values (truncated for readability)
+            logger.info(
+                "RAG Gateway extracted fields",
+                field_names=list(extracted_fields.keys()),
+                field_values={
+                    k: (str(v)[:200] + "..." if v and len(str(v)) > 200 else str(v))
+                    for k, v in extracted_fields.items()
+                },
+            )
 
             logger.info(
                 "RAG extraction completed",

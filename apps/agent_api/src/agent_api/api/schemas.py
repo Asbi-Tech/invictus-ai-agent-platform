@@ -141,6 +141,51 @@ class UnifiedChatRequest(BaseModel):
     )
 
 
+class ClarificationQuestionRequest(BaseModel):
+    """A clarification question in the request/response."""
+
+    question_id: str = Field(description="Unique question identifier")
+    question: str = Field(description="The clarification question")
+    options: list[str] | None = Field(
+        default=None, description="Optional predefined answer options"
+    )
+    required: bool = Field(default=True, description="Whether an answer is required")
+
+
+class ResumeRequest(BaseModel):
+    """Request to resume a paused execution with user input."""
+
+    session_id: str = Field(description="Session ID of the paused execution")
+    clarification_response: dict[str, Any] | None = Field(
+        default=None,
+        description="Responses to clarification questions (question_id -> response)",
+    )
+    confirmation_response: str | None = Field(
+        default=None,
+        description="Response to plan confirmation: 'approved', 'modify', or 'cancelled'",
+    )
+    plan_modifications: list[str] | None = Field(
+        default=None, description="Requested modifications if confirmation_response is 'modify'"
+    )
+
+
+class ExecutionPlanResponse(BaseModel):
+    """Execution plan returned to user for confirmation."""
+
+    plan_id: str = Field(description="Unique plan identifier")
+    sections: list[dict[str, Any]] = Field(description="Planned document sections")
+    data_requirements: list[dict[str, Any]] = Field(
+        description="Data sources that will be queried"
+    )
+    tool_usage_plan: list[dict[str, Any]] = Field(description="Tools that will be called")
+    template_strategy: str = Field(
+        description="Template strategy: use_existing, modify, or generate_new"
+    )
+    estimated_complexity: str = Field(
+        description="Estimated complexity: simple, moderate, or complex"
+    )
+
+
 # ============================================================
 # Response Schemas
 # ============================================================
@@ -224,16 +269,64 @@ class ErrorResponse(BaseModel):
 class SSEEventType(str, Enum):
     """Types of Server-Sent Events."""
 
+    # === Connection & Status Events ===
     STATUS = "status"
     THINKING = "thinking"  # Intermediate thought status events
+    FINAL = "final"
+    ERROR = "error"
+
+    # === Tool Events ===
     TOOL_CALL_START = "tool_call_start"
     TOOL_CALL_RESULT = "tool_call_result"
+
+    # === Response Streaming Events ===
     ASSISTANT_DELTA = "assistant_delta"
     ARTIFACT_UPDATE = "artifact_update"
     EDIT_INSTRUCTION = "edit_instruction"  # For streaming edit instructions
+
+    # === HITL Events ===
     HITL_REQUEST = "hitl_request"
-    FINAL = "final"
-    ERROR = "error"
+    CLARIFICATION_REQUIRED = "clarification_required"
+    CLARIFICATION_RESOLVED = "clarification_resolved"
+    PLAN_GENERATED = "plan_generated"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    CONFIRMATION_RECEIVED = "confirmation_received"
+
+    # === Phase Lifecycle Events ===
+    PHASE_STARTED = "phase_started"
+    PHASE_COMPLETED = "phase_completed"
+    INTENT_DETECTED = "intent_detected"
+    ENTITIES_DETECTED = "entities_detected"
+
+    # === Data Retrieval Events ===
+    FETCHING_MCP_DATA = "fetching_mcp_data"
+    MCP_DATA_RECEIVED = "mcp_data_received"
+    FETCHING_RAG_DATA = "fetching_rag_data"
+    RAG_DATA_RECEIVED = "rag_data_received"
+    FETCHING_WEB_DATA = "fetching_web_data"
+    WEB_DATA_RECEIVED = "web_data_received"
+
+    # === Synthesis Events ===
+    SYNTHESIS_STARTED = "synthesis_started"
+    INSIGHT_GENERATED = "insight_generated"
+    SYNTHESIS_COMPLETED = "synthesis_completed"
+
+    # === Template Events ===
+    TEMPLATE_SELECTED = "template_selected"
+    TEMPLATE_ADAPTED = "template_adapted"
+
+    # === Section Generation Events ===
+    SECTION_STARTED = "section_started"
+    SECTION_PROGRESS = "section_progress"
+    SECTION_COMPLETED = "section_completed"
+
+    # === Review Events ===
+    REVIEW_STARTED = "review_started"
+    REVIEW_ISSUE_FOUND = "review_issue_found"
+    REVIEW_COMPLETED = "review_completed"
+
+    # === Source Attribution Events ===
+    SOURCE_MAPPED = "source_mapped"
 
 
 class SSEEvent(BaseModel):

@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     tavily_api_key: str = Field(default="", description="Tavily API key for internet search")
 
     # MCP Server URLs
-    mcp_opportunities_url: str = Field(default="http://localhost:8001")
+    mcp_deals_url: str = Field(default="http://localhost:8001")
     mcp_clients_url: str = Field(default="http://localhost:8002")
     mcp_risk_planning_url: str = Field(default="http://localhost:8003")
     mcp_reporting_url: str = Field(default="http://localhost:8004")

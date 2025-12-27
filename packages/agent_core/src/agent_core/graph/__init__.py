@@ -1,13 +1,13 @@
-"""LangGraph agent graph."""
+"""LangGraph multi-agent orchestrator graph."""
 
 from agent_core.graph.base_graph import (
-    compile_agent_graph,
-    create_agent,
-    create_agent_graph,
+    create_multi_agent_graph,
+    compile_multi_agent_graph,
 )
+from agent_core.graph.state import MultiAgentState
 
 __all__ = [
-    "create_agent_graph",
-    "compile_agent_graph",
-    "create_agent",
+    "create_multi_agent_graph",
+    "compile_multi_agent_graph",
+    "MultiAgentState",
 ]

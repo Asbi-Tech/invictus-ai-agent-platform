@@ -1,0 +1,15 @@
+"""Mock data for Deals MCP server."""
+
+from mcp_deals.data.mock_data import (
+    MOCK_OPPORTUNITIES,
+    MOCK_PRESCREENING_REPORTS,
+    MOCK_INVESTMENT_MEMOS,
+    MOCK_ACTIVITY_TIMELINE,
+)
+
+__all__ = [
+    "MOCK_OPPORTUNITIES",
+    "MOCK_PRESCREENING_REPORTS",
+    "MOCK_INVESTMENT_MEMOS",
+    "MOCK_ACTIVITY_TIMELINE",
+]

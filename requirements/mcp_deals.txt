@@ -1,4 +1,4 @@
-# MCP Opportunities server dependencies
+# MCP Deals server dependencies
 -r mcp_common.txt
 
 # Database connectivity (adjust based on your DB)

@@ -35,7 +35,7 @@ class MCPClientRegistry:
     def _load_from_settings(self) -> None:
         """Load MCP server URLs from settings."""
         self._servers = {
-            "opportunities": settings.mcp_opportunities_url,
+            "deals": settings.mcp_deals_url,
             "clients": settings.mcp_clients_url,
             "risk_planning": settings.mcp_risk_planning_url,
             "reporting": settings.mcp_reporting_url,

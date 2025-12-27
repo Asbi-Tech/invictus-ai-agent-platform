@@ -1,6 +1,6 @@
-# Invictus Copilot API
+# Invictus Copilot API (Multi-Agent)
 
-A LangGraph-based AI agent platform supporting conversational (Ask) and document generation (Agent) modes with real-time SSE streaming.
+A LangGraph-based multi-agent platform with mandatory Human-in-the-Loop (HITL) gates, parallel section writing, and comprehensive source attribution.
 
 ## Table of Contents
 
@@ -9,7 +9,8 @@ A LangGraph-based AI agent platform supporting conversational (Ask) and document
 - [API Endpoints](#api-endpoints)
 - [Request Types](#request-types)
 - [SSE Events](#sse-events)
-- [Graph Flow](#graph-flow)
+- [Multi-Agent Flow](#multi-agent-flow)
+- [HITL Protocol](#hitl-protocol)
 - [Tools](#tools)
 - [Usage Examples](#usage-examples)
 - [Configuration](#configuration)
@@ -18,7 +19,7 @@ A LangGraph-based AI agent platform supporting conversational (Ask) and document
 
 ## Overview
 
-The Copilot API provides two primary modes of interaction:
+The Copilot API is a multi-agent system with 10 specialized subgraphs orchestrated by a central coordinator. It supports:
 
 | Mode | Purpose | Output |
 |------|---------|--------|
@@ -26,33 +27,52 @@ The Copilot API provides two primary modes of interaction:
 | **Agent (Create)** | Generate new documents/artifacts | Structured artifact (memo, report, etc.) |
 | **Agent (Edit)** | Modify existing artifacts | Diff-based edit instructions |
 
-All modes support real-time SSE streaming with "thinking" status updates.
+### Key Features
+
+- **Mandatory HITL Gates**: Clarification and plan confirmation before execution
+- **10 Specialized Subgraphs**: Intent analysis, planning, data retrieval, synthesis, section writing, review
+- **Parallel Section Writing**: Concurrent generation of document sections
+- **Section-Level Source Attribution**: Every section linked to its data sources
+- **Rich SSE Streaming**: 25+ event types for real-time UI updates
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         FastAPI Router                          │
-│                    /v1/copilot/chat, /stream                    │
-└─────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      LangGraph Agent                            │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐  │
-│  │ingest_context│───▶│route_request │───▶│  ASK / AGENT     │  │
-│  └──────────────┘    └──────────────┘    │  Flow Nodes      │  │
-│                                          └──────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                                 │
-              ┌──────────────────┼──────────────────┐
-              ▼                  ▼                  ▼
-   ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-   │   Deals MCP      │ │   RAG Gateway    │ │   Tavily         │
-   │   (Mock Tools)   │ │   (Doc Search)   │ │   (Web Search)   │
-   └──────────────────┘ └──────────────────┘ └──────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         FastAPI Router                                   │
+│              /v1/copilot/chat, /stream, /stream/resume                  │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Multi-Agent Orchestrator                              │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                        Subgraphs                                  │   │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐            │   │
+│  │  │ Intent   │ │Clarifi-  │ │ Planning │ │Confirma- │            │   │
+│  │  │ Analyzer │ │ cation   │ │          │ │  tion    │            │   │
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘            │   │
+│  │       │            │            │            │                    │   │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐            │   │
+│  │  │  Data    │ │Synthesis │ │ Template │ │ Section  │            │   │
+│  │  │Retrieval │ │          │ │ Manager  │ │ Writers  │            │   │
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘            │   │
+│  │       │                                       │                    │   │
+│  │  ┌──────────┐                          ┌──────────┐              │   │
+│  │  │  Review  │                          │ Source   │              │   │
+│  │  │          │                          │ Mapper   │              │   │
+│  │  └──────────┘                          └──────────┘              │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+              ┌─────────────────────┼─────────────────────┐
+              ▼                     ▼                     ▼
+   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+   │   Deals MCP      │  │   RAG Gateway    │  │   Tavily         │
+   │   (Structured)   │  │   (Documents)    │  │   (Web Search)   │
+   └──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
 ### Package Structure
@@ -62,28 +82,36 @@ invictus-ai-agent-platform/
 ├── apps/
 │   └── agent_api/src/agent_api/
 │       ├── api/
-│       │   ├── routes.py      # FastAPI endpoints
-│       │   └── schemas.py     # Pydantic models
-│       └── main.py            # Application entry
+│       │   ├── routes.py         # FastAPI endpoints + HITL handling
+│       │   └── schemas.py        # Pydantic models + SSE events
+│       └── main.py               # Application entry
 ├── packages/
 │   ├── agent_core/src/agent_core/
 │   │   ├── graph/
-│   │   │   ├── base_graph.py  # LangGraph definition
-│   │   │   └── nodes/         # Graph node functions
+│   │   │   ├── base_graph.py     # Multi-agent orchestrator
+│   │   │   ├── state.py          # MultiAgentState schema
+│   │   │   └── subgraphs/        # 10 specialized subgraphs
+│   │   │       ├── intent_analyzer/
+│   │   │       ├── clarification/
+│   │   │       ├── planning/
+│   │   │       ├── confirmation/
+│   │   │       ├── data_retrieval/
+│   │   │       ├── synthesis/
+│   │   │       ├── template_manager/
+│   │   │       ├── section_writer/
+│   │   │       ├── review/
+│   │   │       └── source_mapper/
 │   │   ├── tools/
-│   │   │   ├── deals_mcp.py   # Deals domain tools
-│   │   │   ├── mcp_client.py  # Generic MCP client
-│   │   │   ├── rag_gateway.py # Document extraction
-│   │   │   └── web_search.py  # Tavily web search
+│   │   │   ├── deals_mcp.py      # Deals domain tools
+│   │   │   ├── rag_gateway.py    # Document extraction
+│   │   │   └── web_search.py     # Tavily web search
 │   │   └── memory/
 │   │       └── cosmos_checkpointer.py  # State persistence
 │   ├── common/src/common/
-│   │   ├── config.py          # Settings management
-│   │   ├── logging.py         # Structured logging
-│   │   └── errors.py          # Error definitions
+│   │   ├── config.py             # Settings management
+│   │   └── logging.py            # Structured logging
 │   └── mcp_common/src/mcp_common/
-│       ├── auth.py            # Authentication
-│       └── telemetry.py       # Observability
+│       └── auth.py               # Authentication
 ```
 
 ---
@@ -99,9 +127,18 @@ Non-streaming chat endpoint supporting both ask and agent modes.
 
 ### POST `/v1/copilot/stream`
 
-SSE streaming endpoint with real-time "thinking" events.
+SSE streaming endpoint with real-time events and HITL support.
 
 **Request:** `UnifiedChatRequest`
+**Response:** `EventSourceResponse` (SSE stream)
+
+When the graph pauses for HITL (clarification or confirmation), emits a `status: paused` event with `resume_endpoint`.
+
+### POST `/v1/copilot/stream/resume`
+
+Resume a paused execution with user input.
+
+**Request:** `ResumeRequest`
 **Response:** `EventSourceResponse` (SSE stream)
 
 ---
@@ -119,7 +156,7 @@ SSE streaming endpoint with real-time "thinking" events.
 
     # Message content
     "message": "string",             # Required: User's message
-    "additional_prompt": "string",   # Optional: Extra context (e.g., "This is for a board meeting")
+    "additional_prompt": "string",   # Optional: Extra context
 
     # Context
     "page_context": {                # Optional: Current page context
@@ -127,14 +164,13 @@ SSE streaming endpoint with real-time "thinking" events.
         "screen_name": "opportunity_detail",
         "opportunity_id": "opp-123",
         "opportunity_name": "Acme Fund III",
-        "screen_highlights": {},     # Module-specific data
+        "screen_highlights": {},
         "additional_context": {}
     },
-    "document_ids": ["doc-1", "doc-2"],  # [DEPRECATED] Use selected_docs instead
-    "selected_docs": {                   # Optional: Documents with storage config for RAG
+    "selected_docs": {               # Optional: Documents for RAG
         "doc_ids": ["doc-1", "doc-2"],
         "doc_sets": [],
-        "storage": {                     # Required for RAG to work
+        "storage": {
             "account_url": "https://your-storage.blob.core.windows.net",
             "filesystem": "documents",
             "base_prefix": "tenant-123/"
@@ -144,7 +180,7 @@ SSE streaming endpoint with real-time "thinking" events.
     # Session
     "session_id": "string",          # Optional: For conversational continuity
 
-    # Request type configuration
+    # Request type
     "type": "ask",                   # "ask" or "agent"
     "agent_case": "create",          # For agent type: "edit" or "create"
 
@@ -158,8 +194,26 @@ SSE streaming endpoint with real-time "thinking" events.
     },
 
     # Tool enablement
-    "enabled_mcps": ["deals"],       # List of enabled MCP servers (empty [] = no MCPs)
-    "web_search_enabled": false      # Enable Tavily web search
+    "enabled_mcps": ["deals"],       # List of enabled MCP servers
+    "web_search_enabled": false      # Enable web search
+}
+```
+
+### ResumeRequest
+
+```python
+{
+    "session_id": "string",          # Required: Session ID of paused execution
+
+    # For clarification responses
+    "clarification_response": {      # Optional: Answers to clarification questions
+        "question_id_1": "answer_1",
+        "question_id_2": "answer_2"
+    },
+
+    # For plan confirmation
+    "confirmation_response": "approved",  # "approved", "modify", or "cancelled"
+    "plan_modifications": ["..."]    # Optional: Requested changes if "modify"
 }
 ```
 
@@ -168,10 +222,10 @@ SSE streaming endpoint with real-time "thinking" events.
 ```python
 {
     "session_id": "string",
-    "message": "string",             # AI response text
-    "tool_results": [...],           # Tool call results
-    "citations": [...],              # Source citations
-    "intent": "string",              # Detected intent
+    "message": "string",
+    "tool_results": [...],
+    "citations": [...],
+    "intent": "string",
 
     # Agent mode fields
     "artifact": {                    # For agent create mode
@@ -183,16 +237,7 @@ SSE streaming endpoint with real-time "thinking" events.
         "citations": [...],
         "metadata": {}
     },
-    "edit_instructions": [           # For agent edit mode
-        {
-            "operation": "modify",   # "add", "remove", "modify"
-            "section_id": "executive_summary",
-            "section_title": "Executive Summary",
-            "position": "replace",   # "before", "after", "replace"
-            "content": "New content...",
-            "reasoning": "Updated based on latest data"
-        }
-    ]
+    "edit_instructions": [...]       # For agent edit mode
 }
 ```
 
@@ -200,79 +245,280 @@ SSE streaming endpoint with real-time "thinking" events.
 
 ## SSE Events
 
-The streaming endpoint emits the following event types:
+The streaming endpoints emit the following event types:
+
+### Connection & Status Events
 
 | Event Type | Description | Data |
 |------------|-------------|------|
-| `status` | Processing status updates | `{ status, session_id, type }` |
+| `status` | Processing status | `{ status, session_id, type }` |
 | `thinking` | Intermediate thoughts | `{ message, node }` |
-| `tool_call_start` | Tool execution started | `{ tool_name, input }` |
-| `tool_call_result` | Tool execution completed | `{ tool_name, success, latency_ms }` |
-| `assistant_delta` | Response text chunk (ask mode) | `{ content }` |
-| `artifact_update` | Generated artifact (agent create) | `{ artifact_id, content, ... }` |
-| `edit_instruction` | Edit instruction (agent edit) | `{ operation, section_id, ... }` |
-| `hitl_request` | Human-in-the-loop required | `{ question, options }` |
-| `final` | Processing complete | `{ session_id, type, tool_call_count }` |
+| `final` | Processing complete | `{ session_id, type, tool_call_count, current_phase }` |
 | `error` | Error occurred | `{ error }` |
 
-### Example SSE Stream
+### HITL Events
 
-```
-event: status
-data: {"event_type": "status", "data": {"status": "processing", "session_id": "abc-123"}}
+| Event Type | Description | Data |
+|------------|-------------|------|
+| `clarification_required` | User input needed | `{ session_id, questions, message }` |
+| `clarification_resolved` | Clarification received | `{ session_id, responses }` |
+| `plan_generated` | Execution plan created | `{ plan_id, sections, data_requirements }` |
+| `awaiting_confirmation` | Plan approval needed | `{ session_id, plan, message }` |
+| `confirmation_received` | User confirmed/modified/cancelled | `{ session_id, response }` |
 
-event: thinking
-data: {"event_type": "thinking", "data": {"message": "Looking up opportunity details...", "node": "gather_context"}}
+### Phase Lifecycle Events
 
-event: tool_call_result
-data: {"event_type": "tool_call_result", "data": {"tool_name": "deals:get_opportunity_details", "success": true, "latency_ms": 45}}
+| Event Type | Description | Data |
+|------------|-------------|------|
+| `phase_started` | Phase began | `{ phase, message }` |
+| `phase_completed` | Phase finished | `{ phase, ... }` |
+| `intent_detected` | Intent classified | `{ request_type, document_type }` |
+| `entities_detected` | Entities found | `{ entities }` |
 
-event: thinking
-data: {"event_type": "thinking", "data": {"message": "Searching the web for relevant information...", "node": "gather_context"}}
+### Data Retrieval Events
 
-event: tool_call_result
-data: {"event_type": "tool_call_result", "data": {"tool_name": "tavily:web_search", "success": true, "latency_ms": 820}}
+| Event Type | Description | Data |
+|------------|-------------|------|
+| `fetching_mcp_data` | MCP query started | `{ domain }` |
+| `mcp_data_received` | MCP data received | `{ domain, data_keys }` |
+| `fetching_rag_data` | RAG query started | `{ doc_count }` |
+| `rag_data_received` | RAG data received | `{ fields_extracted }` |
+| `fetching_web_data` | Web search started | `{ query }` |
+| `web_data_received` | Web results received | `{ result_count }` |
 
-event: thinking
-data: {"event_type": "thinking", "data": {"message": "Context gathered, generating response...", "node": "gather_context"}}
+### Synthesis Events
 
-event: assistant_delta
-data: {"event_type": "assistant_delta", "data": {"content": "Based on the opportunity data..."}}
+| Event Type | Description | Data |
+|------------|-------------|------|
+| `synthesis_started` | Data synthesis began | `{ message }` |
+| `insight_generated` | Insight extracted | `{ insight }` |
+| `synthesis_completed` | Synthesis finished | `{ insights_count }` |
 
-event: final
-data: {"event_type": "final", "data": {"session_id": "abc-123", "type": "ask", "tool_call_count": 3}}
-```
+### Template Events
+
+| Event Type | Description | Data |
+|------------|-------------|------|
+| `template_selected` | Template chosen | `{ template_id, section_count }` |
+| `template_adapted` | Template modified | `{ adaptations }` |
+
+### Section Generation Events
+
+| Event Type | Description | Data |
+|------------|-------------|------|
+| `section_started` | Section writing began | `{ section_id, section_name }` |
+| `section_progress` | Section progress update | `{ section_id, progress }` |
+| `section_completed` | Section finished | `{ section_id, word_count }` |
+
+### Review Events
+
+| Event Type | Description | Data |
+|------------|-------------|------|
+| `review_started` | Quality review began | `{ message }` |
+| `review_issue_found` | Issue detected | `{ issue_type, severity, description }` |
+| `review_completed` | Review finished | `{ coherence_score, issues_count, approved }` |
+
+### Source Attribution Events
+
+| Event Type | Description | Data |
+|------------|-------------|------|
+| `source_mapped` | Sources linked to sections | `{ total_sources, sections_mapped }` |
+
+### Response Streaming Events
+
+| Event Type | Description | Data |
+|------------|-------------|------|
+| `tool_call_start` | Tool execution started | `{ tool_name, input }` |
+| `tool_call_result` | Tool execution completed | `{ tool_name, success, latency_ms }` |
+| `assistant_delta` | Response text chunk | `{ content }` |
+| `artifact_update` | Generated artifact | `{ artifact_id, content, ... }` |
+| `edit_instruction` | Edit instruction | `{ operation, section_id, ... }` |
 
 ---
 
-## Graph Flow
+## Multi-Agent Flow
 
-### Ask Mode Flow
-
-```
-ingest_context → route_request → route_intent → gather_context → draft_or_answer → finalize → END
-```
-
-1. **ingest_context**: Validate request, normalize context, emit initial thinking event
-2. **route_request**: Determine ask vs agent mode
-3. **route_intent**: Classify user intent (greeting, question, command, clarification)
-4. **gather_context**: Call tools (Deals MCP, RAG) to gather relevant data
-5. **draft_or_answer**: Generate response using LLM with gathered context
-6. **finalize**: Format final response, collect citations
-
-### Agent Mode Flow
+### Complete Agent Flow
 
 ```
-ingest_context → route_request → determine_action →
-    [EDIT]:   gather_for_edit → generate_edit_instructions → finalize_agent → END
-    [CREATE]: gather_for_create → generate_artifact → finalize_agent → END
+                    ┌──────────────────┐
+                    │  ingest_context  │
+                    └────────┬─────────┘
+                             │
+                    ┌────────▼─────────┐
+                    │ intent_analyzer  │  ← Classify request, detect entities
+                    └────────┬─────────┘
+                             │
+              ┌──────────────┴──────────────┐
+              │                             │
+    [clarification needed]          [ready to plan]
+              │                             │
+    ┌─────────▼─────────┐                   │
+    │   clarification   │  ← HITL INTERRUPT │
+    └─────────┬─────────┘                   │
+              │                             │
+              └──────────────┬──────────────┘
+                             │
+                    ┌────────▼─────────┐
+                    │     planning     │  ← Generate execution plan
+                    └────────┬─────────┘
+                             │
+                    ┌────────▼─────────┐
+                    │confirmation_gate │  ← HITL INTERRUPT
+                    └────────┬─────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+         [approved]     [modify]      [cancelled]
+              │              │              │
+              │         (loop to           END
+              │          planning)
+              │
+     ┌────────▼─────────┐
+     │  data_retrieval  │  ← MCP + RAG + Web agents
+     └────────┬─────────┘
+              │
+     ┌────────▼─────────┐
+     │    synthesis     │  ← Normalize, insights, confidence
+     └────────┬─────────┘
+              │
+     ┌────────▼─────────┐
+     │ template_manager │  ← Select and map template
+     └────────┬─────────┘
+              │
+     ┌────────▼─────────┐
+     │ section_writers  │  ← PARALLEL section generation
+     └────────┬─────────┘
+              │
+     ┌────────▼─────────┐
+     │     review       │  ← Coherence, citations, suggestions
+     └────────┬─────────┘
+              │
+     ┌────────▼─────────┐
+     │  source_mapper   │  ← Build source ledger
+     └────────┬─────────┘
+              │
+     ┌────────▼─────────┐
+     │    finalize      │
+     └────────┬─────────┘
+              │
+             END
 ```
 
-1. **determine_action**: Route to edit or create flow based on `agent_case`
-2. **gather_for_edit/create**: Gather context specific to the operation
-3. **generate_edit_instructions**: Produce diff-based modifications
-4. **generate_artifact**: Create new structured document
-5. **finalize_agent**: Format agent-specific response
+### Subgraph Descriptions
+
+| Subgraph | Purpose |
+|----------|---------|
+| **intent_analyzer** | Classifies request type, detects document type, identifies entities |
+| **clarification** | Generates and collects clarification questions (HITL interrupt) |
+| **planning** | Creates execution plan with sections, data requirements, tool usage |
+| **confirmation** | Presents plan for user approval (HITL interrupt) |
+| **data_retrieval** | Orchestrates MCP, RAG, and Web data collection |
+| **synthesis** | Normalizes data, generates insights, scores confidence |
+| **template_manager** | Selects template, maps sections to data sources |
+| **section_writer** | Writes all sections in parallel using asyncio.gather |
+| **review** | Checks coherence, validates citations, generates suggestions |
+| **source_mapper** | Builds source ledger, links sections to sources |
+
+---
+
+## HITL Protocol
+
+The system has two mandatory HITL gates that pause execution and wait for user input.
+
+### Clarification Flow
+
+When the system needs more information:
+
+1. **System emits** `clarification_required` event:
+```json
+{
+  "event_type": "clarification_required",
+  "data": {
+    "session_id": "abc-123",
+    "questions": [
+      {
+        "question_id": "q1",
+        "question": "Which opportunity should I create the memo for?",
+        "options": ["Acme Fund III", "Beta Capital II"],
+        "required": true
+      }
+    ],
+    "message": "Please provide additional information to continue."
+  }
+}
+```
+
+2. **System emits** `status: paused`:
+```json
+{
+  "event_type": "status",
+  "data": {
+    "status": "paused",
+    "session_id": "abc-123",
+    "interrupt_type": "clarification",
+    "resume_endpoint": "/v1/copilot/stream/resume"
+  }
+}
+```
+
+3. **User calls** `/stream/resume`:
+```json
+{
+  "session_id": "abc-123",
+  "clarification_response": {
+    "q1": "Acme Fund III"
+  }
+}
+```
+
+4. **System resumes** and emits `clarification_resolved`
+
+### Confirmation Flow
+
+When the execution plan is ready:
+
+1. **System emits** `awaiting_confirmation` event:
+```json
+{
+  "event_type": "awaiting_confirmation",
+  "data": {
+    "session_id": "abc-123",
+    "plan": {
+      "plan_id": "plan-456",
+      "sections": [
+        {"id": "exec_summary", "name": "Executive Summary"},
+        {"id": "investment_thesis", "name": "Investment Thesis"}
+      ],
+      "data_requirements": [
+        {"source": "mcp:deals", "query": "opportunity_details"}
+      ],
+      "template_strategy": "use_existing"
+    },
+    "message": "Please review and approve the execution plan."
+  }
+}
+```
+
+2. **System emits** `status: paused`
+
+3. **User calls** `/stream/resume`:
+```json
+{
+  "session_id": "abc-123",
+  "confirmation_response": "approved"
+}
+```
+
+Or to modify:
+```json
+{
+  "session_id": "abc-123",
+  "confirmation_response": "modify",
+  "plan_modifications": ["Add ESG section", "Focus more on risks"]
+}
+```
+
+4. **System resumes** (or loops back to planning if "modify")
 
 ---
 
@@ -280,11 +526,11 @@ ingest_context → route_request → determine_action →
 
 ### Deals MCP Tools
 
-Mock implementations for private equity deal management:
+Structured data from the deals domain:
 
 | Tool | Description | Returns |
 |------|-------------|---------|
-| `get_opportunity_details` | Fetch opportunity information | name, status, target_raise, sector, etc. |
+| `get_opportunity_details` | Fetch opportunity information | name, status, target_raise, sector |
 | `get_prescreening_report` | Get prescreening analysis | recommendation, risk_rating, key_findings |
 | `get_investment_memo` | Retrieve existing memo | sections, version, executive_summary |
 | `get_opportunity_activity` | Recent activity log | activities with date, action, user |
@@ -294,62 +540,26 @@ Mock implementations for private equity deal management:
 Document extraction with field-based querying:
 
 ```python
-# Generate fields based on question
-fields = await generate_fields_for_question(
-    question="What are the key risks?",
-    llm=llm
-)
-# ["key_risks", "risk_factors", "risk_assessment"]
-
-# Extract from documents
 result = await extract_fields(
     doc_ids=["doc-1", "doc-2"],
     storage=StorageConfig(...),
-    fields=fields,
+    fields=["key_risks", "financials"],
     user_question="What are the key risks?"
 )
 ```
 
 ### Tavily Web Search
 
-Internet search for real-time information (requires `TAVILY_API_KEY`):
+Internet search for real-time information:
 
 ```python
-from agent_core.tools.web_search import web_search, search_for_context
-
-# Basic web search
 result = await web_search(
     query="Private equity ESG trends 2024",
-    search_depth="advanced",  # "basic" or "advanced"
+    search_depth="advanced",
     max_results=5,
-    include_answer=True,      # AI-generated summary
+    include_answer=True
 )
-
-# Contextual search with opportunity context
-result = await search_for_context(
-    user_question="What are the latest market trends?",
-    opportunity_name="Acme Fund III",  # Optional
-    sector="Technology",               # Optional
-)
-
-# Result structure
-{
-    "success": True,
-    "query": "...",
-    "results": [
-        {
-            "title": "Article Title",
-            "url": "https://...",
-            "content": "Snippet...",
-            "score": 0.95
-        }
-    ],
-    "answer": "AI-generated summary..."  # If include_answer=True
-}
 ```
-
-**Enabling Web Search:**
-Set `web_search_enabled: true` in the request to enable Tavily search during context gathering.
 
 ---
 
@@ -372,95 +582,111 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
   }'
 ```
 
-### Agent Mode - Create Artifact
-
-```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tenant_id": "tenant-123",
-    "user_id": "user-456",
-    "message": "Create an investment memo for this opportunity",
-    "type": "agent",
-    "agent_case": "create",
-    "additional_prompt": "Focus on ESG factors",
-    "page_context": {
-      "screen_name": "opportunity_detail",
-      "opportunity_id": "opp-abc",
-      "opportunity_name": "Acme Fund III"
-    },
-    "enabled_mcps": ["deals"]
-  }'
-```
-
-### Agent Mode - Edit Artifact
-
-```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tenant_id": "tenant-123",
-    "user_id": "user-456",
-    "message": "Add a section about ESG considerations",
-    "type": "agent",
-    "agent_case": "edit",
-    "current_artifact": {
-      "artifact_id": "art-123",
-      "artifact_type": "investment_memo",
-      "title": "Acme Fund III - Investment Memo",
-      "content": "# Investment Memo\n\n## Executive Summary\n..."
-    }
-  }'
-```
-
-### Ask Mode with Web Search
-
-```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tenant_id": "tenant-123",
-    "user_id": "user-456",
-    "message": "What are the latest market trends in private equity?",
-    "type": "ask",
-    "web_search_enabled": true,
-    "page_context": {
-      "screen_name": "dashboard",
-      "opportunity_id": "opp-abc"
-    }
-  }'
-```
-
-### SSE Streaming
+### Agent Mode - Create Artifact (with HITL)
 
 ```javascript
+// Start the stream
 const eventSource = new EventSource('/v1/copilot/stream', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
     tenant_id: 'tenant-123',
     user_id: 'user-456',
-    message: 'Tell me about this opportunity',
-    type: 'ask',
+    message: 'Create an investment memo for this opportunity',
+    type: 'agent',
+    agent_case: 'create',
     page_context: {
-      opportunity_id: 'opp-abc'
+      opportunity_id: 'opp-abc',
+      opportunity_name: 'Acme Fund III'
     }
   })
 });
 
-eventSource.addEventListener('thinking', (e) => {
+// Handle HITL pause
+eventSource.addEventListener('awaiting_confirmation', (e) => {
   const data = JSON.parse(e.data);
-  console.log('Thinking:', data.data.message);
+  showPlanApprovalDialog(data.data.plan);
 });
 
-eventSource.addEventListener('assistant_delta', (e) => {
+eventSource.addEventListener('status', (e) => {
   const data = JSON.parse(e.data);
-  appendToResponse(data.data.content);
+  if (data.data.status === 'paused') {
+    // Wait for user to approve/modify/cancel
+  }
+});
+```
+
+### Resume After Confirmation
+
+```javascript
+// After user approves the plan
+const resumeSource = new EventSource('/v1/copilot/stream/resume', {
+  method: 'POST',
+  body: JSON.stringify({
+    session_id: 'abc-123',
+    confirmation_response: 'approved'
+  })
 });
 
-eventSource.addEventListener('final', (e) => {
-  eventSource.close();
+resumeSource.addEventListener('section_completed', (e) => {
+  const data = JSON.parse(e.data);
+  console.log(`Section ${data.data.section_id} complete`);
 });
+
+resumeSource.addEventListener('artifact_update', (e) => {
+  const data = JSON.parse(e.data);
+  displayArtifact(data.data);
+});
+```
+
+### Example SSE Stream (Full Flow)
+
+```
+event: status
+data: {"event_type": "status", "data": {"status": "processing", "session_id": "abc-123"}}
+
+event: phase_started
+data: {"event_type": "phase_started", "data": {"phase": "intent", "message": "Analyzing request..."}}
+
+event: intent_detected
+data: {"event_type": "intent_detected", "data": {"request_type": "create", "document_type": "investment_memo"}}
+
+event: phase_started
+data: {"event_type": "phase_started", "data": {"phase": "planning", "message": "Creating execution plan..."}}
+
+event: plan_generated
+data: {"event_type": "plan_generated", "data": {"plan_id": "plan-456", "sections": [...]}}
+
+event: awaiting_confirmation
+data: {"event_type": "awaiting_confirmation", "data": {"session_id": "abc-123", "plan": {...}}}
+
+event: status
+data: {"event_type": "status", "data": {"status": "paused", "interrupt_type": "confirmation"}}
+
+... (user resumes with approval) ...
+
+event: status
+data: {"event_type": "status", "data": {"status": "resuming", "session_id": "abc-123"}}
+
+event: fetching_mcp_data
+data: {"event_type": "fetching_mcp_data", "data": {"domain": "deals"}}
+
+event: mcp_data_received
+data: {"event_type": "mcp_data_received", "data": {"domain": "deals", "data_keys": ["opportunity", "prescreening"]}}
+
+event: section_started
+data: {"event_type": "section_started", "data": {"section_id": "exec_summary", "section_name": "Executive Summary"}}
+
+event: section_completed
+data: {"event_type": "section_completed", "data": {"section_id": "exec_summary", "word_count": 250}}
+
+event: review_completed
+data: {"event_type": "review_completed", "data": {"coherence_score": 0.92, "issues_count": 1, "approved": true}}
+
+event: artifact_update
+data: {"event_type": "artifact_update", "data": {"artifact_id": "art-789", "title": "Acme Fund III - Investment Memo", "content": "..."}}
+
+event: final
+data: {"event_type": "final", "data": {"session_id": "abc-123", "type": "agent", "artifact_count": 1}}
 ```
 
 ---
@@ -480,7 +706,7 @@ AZURE_OPENAI_API_KEY=your-api-key
 AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
 AZURE_OPENAI_API_VERSION=2024-02-01
 
-# Cosmos DB (State Persistence)
+# Cosmos DB (State Persistence for HITL)
 COSMOS_ENDPOINT=https://your-cosmos.documents.azure.com:443/
 COSMOS_KEY=your-cosmos-key
 COSMOS_DATABASE_NAME=invictus-copilot
@@ -492,15 +718,13 @@ COSMOS_ARTIFACTS_CONTAINER=artifacts
 RAG_GATEWAY_URL=https://your-rag-gateway.com
 RAG_GATEWAY_API_KEY=your-rag-key
 
-# MCP Server URLs (for future integration)
+# MCP Server URLs
 MCP_OPPORTUNITIES_URL=http://localhost:8001
 MCP_CLIENTS_URL=http://localhost:8002
 MCP_RISK_PLANNING_URL=http://localhost:8003
-MCP_REPORTING_URL=http://localhost:8004
-MCP_ADMIN_POLICY_URL=http://localhost:8005
 
 # Optional
-TAVILY_API_KEY=your-tavily-key  # For web search
+TAVILY_API_KEY=your-tavily-key
 ```
 
 ---
@@ -525,13 +749,13 @@ uvicorn agent_api.main:app --reload --port 8000
 
 ## State Persistence
 
-The agent uses Cosmos DB for state persistence via LangGraph's checkpointer:
+The agent uses Cosmos DB for state persistence, which is **required** for HITL to work:
 
 - **Sessions**: Conversation history and context
-- **Checkpoints**: Graph state snapshots for resumption
+- **Checkpoints**: Graph state snapshots for HITL resume
 - **Artifacts**: Generated documents with versioning
 
-If Cosmos DB is unavailable, the agent runs without persistence (in-memory only).
+If Cosmos DB is unavailable, HITL functionality will not work (sessions cannot be resumed).
 
 ---
 
