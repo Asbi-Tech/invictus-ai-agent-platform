@@ -44,7 +44,7 @@ Minimal payload for a simple Q&A request.
 curl -X POST http://localhost:8000/v1/copilot/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "What is the target raise for this opportunity?",
     "type": "ask"
@@ -54,7 +54,7 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 **Postman Body (JSON):**
 ```json
 {
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "What is the target raise for this opportunity?",
     "type": "ask"
@@ -71,7 +71,7 @@ Include current page context for opportunity-specific queries.
 curl -X POST http://localhost:8000/v1/copilot/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "What is the risk rating for this deal?",
     "type": "ask",
@@ -80,10 +80,10 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
         "module_id": "deals",
         "screen_name": "opportunity_detail",
         "opportunity_id": "opp-001",
-        "opportunity_name": "Acme Fund III",
+        "opportunity_name": "Wonder Group Inc",
         "screen_highlights": {
-            "sector": "Technology",
-            "stage": "Series B"
+            "sector": "Food Technology",
+            "stage": "SAFE Note"
         },
         "additional_context": {
             "last_updated": "2024-12-01"
@@ -96,7 +96,7 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 **Postman Body (JSON):**
 ```json
 {
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "What is the risk rating for this deal?",
     "type": "ask",
@@ -173,7 +173,7 @@ Enable web search for real-time information.
 curl -X POST http://localhost:8000/v1/copilot/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "What are the latest ESG trends in private equity for 2024?",
     "type": "ask",
@@ -184,7 +184,7 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 **Postman Body (JSON):**
 ```json
 {
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "What are the latest ESG trends in private equity for 2024?",
     "type": "ask",
@@ -203,7 +203,7 @@ Continue a conversation with session_id.
 curl -X POST http://localhost:8000/v1/copilot/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "Tell me about the Wonder Group Inc opportunity",
     "type": "ask",
@@ -219,7 +219,7 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 curl -X POST http://localhost:8000/v1/copilot/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "What are the main risks?",
     "type": "ask",
@@ -230,7 +230,7 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 **Postman Body (JSON) - Follow-up:**
 ```json
 {
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "What are the main risks?",
     "type": "ask",
@@ -240,54 +240,7 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 
 ---
 
-### 1.6 Agent Create Mode - Investment Memo
-
-Create a new investment memo artifact.
-
-```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tenant_id": "tenant-123",
-    "user_id": "user-456",
-    "message": "Create an investment memo for this opportunity",
-    "type": "agent",
-    "agent_case": "create",
-    "module_id": "deals",
-    "page_context": {
-        "module_id": "deals",
-        "screen_name": "opportunity_detail",
-        "opportunity_id": "opp-001",
-        "opportunity_name": "Wonder Group Inc"
-    },
-    "enabled_mcps": ["deals"],
-    "additional_prompt": "Focus on the food technology sector and their vertically integrated model"
-  }'
-```
-
-**Postman Body (JSON):**
-```json
-{
-    "tenant_id": "tenant-123",
-    "user_id": "user-456",
-    "message": "Create an investment memo for this opportunity",
-    "type": "agent",
-    "agent_case": "create",
-    "module_id": "deals",
-    "page_context": {
-        "module_id": "deals",
-        "screen_name": "opportunity_detail",
-        "opportunity_id": "opp-001",
-        "opportunity_name": "Acme Fund III"
-    },
-    "enabled_mcps": ["deals"],
-    "additional_prompt": "Focus on the food technology sector and their vertically integrated model"
-}
-```
-
----
-
-### 1.7 Agent Create Mode - Prescreening Report
+### 1.6 Agent Create Mode - Prescreening Report
 
 Create a prescreening report with document references.
 
@@ -302,8 +255,8 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
     "agent_case": "create",
     "page_context": {
         "screen_name": "opportunity_detail",
-        "opportunity_id": "test-01",
-        "opportunity_name": "Test Opportunity 01"
+        "opportunity_id": "opp-001",
+        "opportunity_name": "Wonder Group Inc"
     },
     "selected_docs": {
         "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
@@ -313,7 +266,8 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
             "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
         }
     },
-    "enabled_mcps": ["deals"]
+    "enabled_mcps": ["deals"],
+    "additional_prompt": "Focus on the food technology sector and their vertically integrated model"
   }'
 ```
 
@@ -327,8 +281,8 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
     "agent_case": "create",
     "page_context": {
         "screen_name": "opportunity_detail",
-        "opportunity_id": "test-01",
-        "opportunity_name": "Test Opportunity 01"
+        "opportunity_id": "opp-001",
+        "opportunity_name": "Wonder Group Inc"
     },
     "selected_docs": {
         "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
@@ -352,7 +306,7 @@ Modify an existing document artifact.
 curl -X POST http://localhost:8000/v1/copilot/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "Add a competitive analysis section and update the risk section with the latest data",
     "type": "agent",
@@ -378,7 +332,7 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 **Postman Body (JSON):**
 ```json
 {
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "Add a competitive analysis section and update the risk section with the latest data",
     "type": "agent",
@@ -414,7 +368,7 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
   -d '{
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "What is the investment thesis for this opportunity?",
     "type": "ask",
@@ -429,7 +383,7 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
 **Postman Body (JSON):**
 ```json
 {
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "What is the investment thesis for this opportunity?",
     "type": "ask",
@@ -473,7 +427,7 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
   -d '{
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "Create an investment memo for this opportunity",
     "type": "agent",
@@ -491,7 +445,7 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
 **Postman Body (JSON):**
 ```json
 {
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "Create an investment memo for this opportunity",
     "type": "agent",
@@ -539,7 +493,7 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
   -d '{
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "Add a competitor analysis section comparing to DoorDash and Uber Eats",
     "type": "agent",
@@ -559,7 +513,7 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
 **Postman Body (JSON):**
 ```json
 {
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "Add a competitor analysis section comparing to DoorDash and Uber Eats",
     "type": "agent",
@@ -862,7 +816,7 @@ curl -X POST http://localhost:8000/v1/copilot/stream/resume \
 curl -X POST http://localhost:8000/v1/copilot/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant_id": "tenant-123",
+    "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
     "message": "Add a new section",
     "type": "agent",
@@ -921,7 +875,7 @@ Create these variables in Postman:
 | Variable | Example Value |
 |----------|---------------|
 | `base_url` | `http://localhost:8000` |
-| `tenant_id` | `tenant-123` |
+| `tenant_id` | `raoof-copilot-test-woner` |
 | `user_id` | `user-456` |
 | `session_id` | `{{last_session_id}}` |
 | `opportunity_id` | `opp-001` |

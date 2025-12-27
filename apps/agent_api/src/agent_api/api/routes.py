@@ -12,6 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from agent_api.api.schemas import (
     ChatResponse,
+    HITLStatus,
     SSEEvent,
     SSEEventType,
     ToolResultResponse,
@@ -222,13 +223,19 @@ def build_initial_state(
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: UnifiedChatRequest) -> ChatResponse:
     """
-    Non-streaming chat endpoint with ask/agent mode support.
+    Non-streaming chat endpoint for Ask mode only.
 
-    Supports:
-    - Ask mode: Conversational flow with RAG + tools
-    - Agent mode (create): Generate new artifacts
-    - Agent mode (edit): Generate edit instructions for existing artifacts
+    This endpoint supports conversational Q&A with RAG + MCP tools.
+    For Agent mode (create/edit), use the /stream endpoint instead.
     """
+    # Reject agent mode requests - must use /stream endpoint
+    if request.type == RequestType.AGENT:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent mode is only available via the /stream endpoint. "
+            "Use POST /v1/copilot/stream for agent mode requests.",
+        )
+
     try:
         initial_state = build_initial_state(request)
         session_id = initial_state["session_id"]
@@ -239,8 +246,6 @@ async def chat(request: UnifiedChatRequest) -> ChatResponse:
             "Processing chat request",
             session_id=session_id,
             tenant_id=request.tenant_id,
-            request_type=request.type.value,
-            agent_case=request.agent_case.value if request.agent_case else None,
         )
 
         # Run the graph
@@ -276,7 +281,7 @@ async def chat(request: UnifiedChatRequest) -> ChatResponse:
         for tr in tool_results:
             citations.extend(tr.citations)
 
-        # Build response based on request type
+        # Build response
         response = ChatResponse(
             session_id=session_id,
             message=last_message,
@@ -285,41 +290,9 @@ async def chat(request: UnifiedChatRequest) -> ChatResponse:
             intent=result.get("current_intent"),
         )
 
-        # Add agent mode specific fields
-        if request.type == RequestType.AGENT:
-            if request.agent_case == AgentCase.CREATE:
-                # Include generated artifact
-                artifacts = result.get("artifacts", [])
-                if artifacts:
-                    artifact = artifacts[-1]
-                    response.artifact = ArtifactResponse(
-                        artifact_id=artifact.get("artifact_id", ""),
-                        artifact_type=artifact.get("artifact_type", ""),
-                        title=artifact.get("title", ""),
-                        content=artifact.get("content", ""),
-                        version=artifact.get("version", 1),
-                        citations=artifact.get("citations", []),
-                        metadata=artifact.get("metadata", {}),
-                    )
-            elif request.agent_case == AgentCase.EDIT:
-                # Include edit instructions
-                edit_instructions = result.get("edit_instructions", [])
-                response.edit_instructions = [
-                    EditInstruction(
-                        operation=EditOperation(inst.get("operation", "modify")),
-                        section_id=inst.get("section_id"),
-                        section_title=inst.get("section_title"),
-                        position=inst.get("position"),
-                        content=inst.get("content"),
-                        reasoning=inst.get("reasoning", ""),
-                    )
-                    for inst in edit_instructions
-                ]
-
         logger.info(
             "Chat request completed",
             session_id=session_id,
-            request_type=request.type.value,
             response_length=len(last_message),
             tool_calls=len(tool_results),
         )
@@ -338,21 +311,25 @@ def check_hitl_interrupt(state: dict) -> dict | None:
     """
     Check if the graph has paused at an HITL interrupt point.
 
+    LangGraph's interrupt_before pauses BEFORE the node runs, so:
+    - For clarification: clarification_pending is True but questions not yet generated
+    - For confirmation: execution_plan exists but plan_confirmed is False
+
     Returns interrupt info dict if interrupted, None otherwise.
     """
     current_phase = state.get("current_phase", "")
     hitl_wait_reason = state.get("hitl_wait_reason")
 
-    # Check for clarification interrupt
+    # Method 1: Check explicit hitl_wait_reason (if node partially ran)
     if hitl_wait_reason == "clarification":
         questions = state.get("clarification_questions", [])
         return {
             "interrupt_type": "clarification",
             "questions": questions,
+            "missing_inputs": state.get("intent_analysis", {}).get("missing_inputs", []),
             "session_id": state.get("session_id"),
         }
 
-    # Check for confirmation interrupt
     if hitl_wait_reason == "confirmation":
         execution_plan = state.get("execution_plan", {})
         return {
@@ -360,6 +337,27 @@ def check_hitl_interrupt(state: dict) -> dict | None:
             "plan": execution_plan,
             "session_id": state.get("session_id"),
         }
+
+    # Method 2: Detect interrupt from state (interrupt_before means node didn't run)
+    # Clarification interrupt: clarification_pending is True
+    if state.get("clarification_pending") and not state.get("clarification_responses"):
+        return {
+            "interrupt_type": "clarification",
+            "questions": state.get("clarification_questions", []),
+            "missing_inputs": state.get("intent_analysis", {}).get("missing_inputs", []),
+            "session_id": state.get("session_id"),
+        }
+
+    # Confirmation interrupt: execution_plan exists but not confirmed
+    execution_plan = state.get("execution_plan")
+    if execution_plan and not state.get("plan_confirmed"):
+        # Check we're at the right phase (confirmation or just completed planning)
+        if current_phase in ["confirmation", "awaiting_confirmation", "planning"]:
+            return {
+                "interrupt_type": "confirmation",
+                "plan": execution_plan,
+                "session_id": state.get("session_id"),
+            }
 
     return None
 

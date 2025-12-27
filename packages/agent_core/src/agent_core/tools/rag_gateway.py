@@ -48,6 +48,27 @@ class TraceInfo(BaseModel):
     session_id: str
 
 
+class SourceChunk(BaseModel):
+    """A source chunk from RAG extraction."""
+
+    chunk_id: str
+    content: str
+    doc_id: str
+    page_numbers: list[int] = Field(default_factory=list)
+    section_path: str | None = None
+    bounding_boxes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ExtractedFieldResult(BaseModel):
+    """Full result for an extracted field including sources."""
+
+    name: str
+    value: Any
+    confidence: float | None = None
+    reasoning: str | None = None
+    sources: list[SourceChunk] = Field(default_factory=list)
+
+
 class ExtractFieldsRequest(BaseModel):
     """Request payload for the ExtractFields API."""
 
@@ -77,7 +98,9 @@ class ExtractedField(BaseModel):
 class ExtractFieldsResponse(BaseModel):
     """Response from the ExtractFields API."""
 
-    fields: dict[str, Any]  # field_name -> extracted_value
+    fields: dict[str, Any]  # field_name -> extracted_value (for backward compat)
+    field_results: list[ExtractedFieldResult] = Field(default_factory=list)  # Full results with sources
+    sources: list[dict[str, Any]] = Field(default_factory=list)  # All unique sources (without bounding boxes)
     metadata: dict[str, Any] = Field(default_factory=dict)
     latency_ms: float = 0
 
@@ -171,13 +194,68 @@ async def extract_fields(
             )
 
             # Parse the response
-            extracted_fields = data.get("fields", data.get("results", {}))
+            raw_fields = data.get("fields", data.get("results", []))
 
-            # RAG Gateway returns fields as a list, convert to dict
-            if isinstance(extracted_fields, list):
-                extracted_fields = {
-                    field.get("name"): field.get("value") for field in extracted_fields
-                }
+            # Handle both list and dict formats
+            field_results: list[ExtractedFieldResult] = []
+            all_sources: list[dict[str, Any]] = []
+            fields_dict: dict[str, Any] = {}
+
+            if isinstance(raw_fields, list):
+                # New format: list of field objects with sources
+                seen_chunks: set[str] = set()
+
+                for field in raw_fields:
+                    name = field.get("name")
+                    value = field.get("value")
+                    fields_dict[name] = value
+
+                    # Collect sources from this field
+                    field_sources = field.get("sources", [])
+
+                    # Build SourceChunk objects for field_results
+                    source_chunks = []
+                    for source in field_sources:
+                        try:
+                            source_chunks.append(SourceChunk(
+                                chunk_id=source.get("chunk_id", ""),
+                                content=source.get("content", ""),
+                                doc_id=source.get("doc_id", ""),
+                                page_numbers=source.get("page_numbers", []),
+                                section_path=source.get("section_path"),
+                                bounding_boxes=source.get("bounding_boxes", []),
+                            ))
+                        except Exception as e:
+                            logger.warning(f"Failed to parse source chunk: {e}")
+
+                    field_results.append(ExtractedFieldResult(
+                        name=name,
+                        value=value,
+                        confidence=field.get("confidence"),
+                        reasoning=field.get("reasoning"),
+                        sources=source_chunks,
+                    ))
+
+                    # Add to all_sources (avoid duplicates by chunk_id, exclude bounding_boxes)
+                    for source in field_sources:
+                        chunk_id = source.get("chunk_id", "")
+                        if chunk_id and chunk_id not in seen_chunks:
+                            # Create a clean source dict without bounding_boxes (to keep response small)
+                            clean_source = {
+                                "source": "rag",
+                                "chunk_id": chunk_id,
+                                "content": source.get("content", ""),
+                                "doc_id": source.get("doc_id", ""),
+                                "page_numbers": source.get("page_numbers", []),
+                                "section_path": source.get("section_path"),
+                            }
+                            all_sources.append(clean_source)
+                            seen_chunks.add(chunk_id)
+
+                extracted_fields = fields_dict
+            else:
+                # Old format: dict of {name: value}
+                extracted_fields = raw_fields
 
             # Log extracted field values (truncated for readability)
             logger.info(
@@ -187,16 +265,20 @@ async def extract_fields(
                     k: (str(v)[:200] + "..." if v and len(str(v)) > 200 else str(v))
                     for k, v in extracted_fields.items()
                 },
+                source_count=len(all_sources),
             )
 
             logger.info(
                 "RAG extraction completed",
                 field_count=len(extracted_fields),
+                source_count=len(all_sources),
                 latency_ms=latency,
             )
 
             return ExtractFieldsResponse(
                 fields=extracted_fields,
+                field_results=field_results,
+                sources=all_sources,
                 metadata=data.get("metadata", {}),
                 latency_ms=latency,
             )

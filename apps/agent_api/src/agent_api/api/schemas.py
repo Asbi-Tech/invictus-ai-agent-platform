@@ -228,6 +228,23 @@ class ArtifactResponse(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class HITLStatus(BaseModel):
+    """HITL interrupt status when execution is paused for user input."""
+
+    paused: bool = Field(description="Whether execution is paused")
+    interrupt_type: str = Field(description="Type of interrupt: 'clarification' or 'confirmation'")
+    resume_endpoint: str = Field(description="Endpoint to call to resume execution")
+    plan: dict[str, Any] | None = Field(
+        default=None, description="Execution plan (for confirmation interrupts)"
+    )
+    questions: list[dict[str, Any]] | None = Field(
+        default=None, description="Clarification questions (for clarification interrupts)"
+    )
+    missing_inputs: list[str] | None = Field(
+        default=None, description="List of missing inputs that need clarification"
+    )
+
+
 class ChatResponse(BaseModel):
     """Chat response payload - extended for both ask and agent modes."""
 
@@ -242,6 +259,10 @@ class ChatResponse(BaseModel):
     )
     edit_instructions: list[EditInstruction] | None = Field(
         default=None, description="Edit instructions (for agent edit mode)"
+    )
+    # HITL status (when execution is paused for user input)
+    hitl_status: HITLStatus | None = Field(
+        default=None, description="HITL status when execution is paused for user input"
     )
 
 

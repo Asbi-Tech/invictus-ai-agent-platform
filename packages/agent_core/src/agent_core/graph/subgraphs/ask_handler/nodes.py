@@ -16,6 +16,7 @@ from agent_core.tools.rag_gateway import (
     extract_fields,
     generate_fields_for_question,
 )
+from agent_core.tools.web_search import search_for_context
 
 logger = get_logger(__name__)
 
@@ -138,6 +139,14 @@ async def fetch_data(state: MultiAgentState) -> dict:
     rag_data: dict[str, Any] = dict(state.get("rag_data", {}))
     rag_enabled = tool_policy.get("rag_enabled", True)
 
+    # Get user question (used by RAG and web search)
+    messages = state.get("messages", [])
+    user_question = None
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            user_question = str(msg.content)
+            break
+
     # Emit thinking event
     if sse_callback := state.get("sse_callback"):
         await sse_callback(
@@ -224,111 +233,213 @@ async def fetch_data(state: MultiAgentState) -> dict:
 
         if doc_ids:
             storage_dict = selected_docs.get("storage")
-            if storage_dict:
-                # Get user question
-                messages = state.get("messages", [])
-                user_question = None
-                for msg in reversed(messages):
-                    if isinstance(msg, HumanMessage):
-                        user_question = str(msg.content)
-                        break
+            if storage_dict and user_question:
+                # Emit fetching event
+                if sse_callback := state.get("sse_callback"):
+                    await sse_callback(
+                        "fetching_rag_data",
+                        {
+                            "message": f"Searching {len(doc_ids)} documents...",
+                            "doc_count": len(doc_ids),
+                        },
+                        "ask_handler",
+                    )
 
-                if user_question:
-                    # Emit fetching event
+                start = datetime.utcnow()
+                try:
+                    # Create storage config
+                    storage = StorageConfig(
+                        account_url=storage_dict.get("account_url", ""),
+                        filesystem=storage_dict.get("filesystem", "documents"),
+                        base_prefix=storage_dict.get("base_prefix", ""),
+                    )
+
+                    # Generate field definitions based on the question
+                    fields = generate_fields_for_question(user_question)
+
+                    # Call RAG Gateway
+                    logger.info(
+                        "Calling RAG Gateway",
+                        doc_count=len(doc_ids),
+                        field_count=len(fields),
+                    )
+
+                    result = await extract_fields(
+                        tenant_id=tenant_id,
+                        doc_ids=doc_ids,
+                        fields=fields,
+                        storage=storage,
+                        user_id=state.get("user_id", ""),
+                        session_id=state.get("session_id", ""),
+                    )
+
+                    latency = (datetime.utcnow() - start).total_seconds() * 1000
+
+                    tool_results.append({
+                        "tool_name": "rag_gateway:extract_fields",
+                        "input_summary": f"Extract fields for: {user_question[:50]}...",
+                        "output_summary": f"Extracted {len(result.fields)} fields from {len(result.sources)} sources",
+                        "latency_ms": latency,
+                        "success": True,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "citations": result.sources,  # Include sources as citations
+                        "raw_output": result.fields,  # Include raw field values
+                    })
+
+                    # Store results
+                    rag_data["fields"] = result.fields
+                    rag_data["field_results"] = [fr.model_dump() for fr in result.field_results]  # Full results with sources
+                    rag_data["sources"] = result.sources  # All unique sources
+                    rag_data["doc_ids"] = doc_ids
+                    rag_data["query"] = user_question
+
+                    tool_call_count += 1
+
+                    logger.info(
+                        "RAG extraction completed",
+                        field_count=len(result.fields),
+                        source_count=len(result.sources),
+                        latency_ms=latency,
+                    )
+
+                    # Emit RAG data received event
                     if sse_callback := state.get("sse_callback"):
                         await sse_callback(
-                            "fetching_rag_data",
+                            "rag_data_received",
                             {
-                                "message": f"Searching {len(doc_ids)} documents...",
+                                "fields_extracted": len(result.fields),
+                                "sources_found": len(result.sources),
                                 "doc_count": len(doc_ids),
+                                "latency_ms": latency,
                             },
                             "ask_handler",
                         )
 
-                    start = datetime.utcnow()
-                    try:
-                        # Create storage config
-                        storage = StorageConfig(
-                            account_url=storage_dict.get("account_url", ""),
-                            filesystem=storage_dict.get("filesystem", "documents"),
-                            base_prefix=storage_dict.get("base_prefix", ""),
-                        )
+                except Exception as e:
+                    logger.error("RAG extraction failed", error=str(e))
+                    tool_results.append({
+                        "tool_name": "rag_gateway:extract_fields",
+                        "input_summary": f"Extract fields for: {user_question[:50]}...",
+                        "output_summary": "",
+                        "latency_ms": 0,
+                        "success": False,
+                        "error": str(e),
+                        "timestamp": datetime.utcnow().isoformat(),
+                    })
 
-                        # Generate field definitions based on the question
-                        fields = generate_fields_for_question(user_question)
+    # ===== Fetch Web data if web search is enabled =====
+    web_data: dict[str, Any] = dict(state.get("web_data", {}))
+    web_search_enabled = tool_policy.get("web_search_enabled", False)
 
-                        # Call RAG Gateway
-                        logger.info(
-                            "Calling RAG Gateway",
-                            doc_count=len(doc_ids),
-                            field_count=len(fields),
-                        )
+    if web_search_enabled and tool_call_count < max_tool_calls and user_question:
+        # Emit fetching event
+        if sse_callback := state.get("sse_callback"):
+            await sse_callback(
+                "fetching_web_data",
+                {"message": "Searching the web for relevant information..."},
+                "ask_handler",
+            )
 
-                        result = await extract_fields(
-                            tenant_id=tenant_id,
-                            doc_ids=doc_ids,
-                            fields=fields,
-                            storage=storage,
-                            user_id=state.get("user_id", ""),
-                            session_id=state.get("session_id", ""),
-                        )
+        start = datetime.utcnow()
+        try:
+            # Get opportunity context for better search (if available from MCP)
+            opp_data = mcp_data.get("opportunity", {})
+            opportunity_name = opp_data.get("name")
+            sector = opp_data.get("sector")
 
-                        latency = (datetime.utcnow() - start).total_seconds() * 1000
+            result = await search_for_context(
+                user_question=user_question,
+                opportunity_name=opportunity_name,
+                sector=sector,
+            )
 
-                        tool_results.append({
-                            "tool_name": "rag_gateway:extract_fields",
-                            "input_summary": f"Extract fields for: {user_question[:50]}...",
-                            "output_summary": f"Extracted {len(result.fields)} fields",
+            latency = (datetime.utcnow() - start).total_seconds() * 1000
+
+            if result.success:
+                # Store web search results
+                web_data["results"] = result.results
+                web_data["query"] = user_question
+                if result.answer:
+                    web_data["answer"] = result.answer
+
+                # Create citations from web results FIRST
+                web_citations = [
+                    {
+                        "source": "web",
+                        "title": r.get("title", ""),
+                        "url": r.get("url", ""),
+                        "snippet": r.get("content", "")[:200],
+                    }
+                    for r in result.results
+                ]
+                web_data["citations"] = web_citations
+
+                # Now append tool_results WITH citations
+                tool_results.append({
+                    "tool_name": "tavily:web_search",
+                    "input_summary": f"Search: {user_question[:50]}...",
+                    "output_summary": f"Found {len(result.results)} results",
+                    "latency_ms": latency,
+                    "success": True,
+                    "error": None,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "citations": web_citations,
+                })
+
+                tool_call_count += 1
+
+                logger.info(
+                    "Web search completed",
+                    result_count=len(result.results),
+                    has_answer=bool(result.answer),
+                    latency_ms=latency,
+                )
+
+                # Emit web data received event
+                if sse_callback := state.get("sse_callback"):
+                    await sse_callback(
+                        "web_data_received",
+                        {
+                            "result_count": len(result.results),
+                            "has_answer": bool(result.answer),
                             "latency_ms": latency,
-                            "success": True,
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
+                        },
+                        "ask_handler",
+                    )
+            else:
+                # Failure case - no citations
+                tool_results.append({
+                    "tool_name": "tavily:web_search",
+                    "input_summary": f"Search: {user_question[:50]}...",
+                    "output_summary": result.error or "No results",
+                    "latency_ms": latency,
+                    "success": False,
+                    "error": result.error,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "citations": [],
+                })
 
-                        # Store results
-                        rag_data["fields"] = result.fields
-                        rag_data["citations"] = getattr(result, "citations", [])
-                        rag_data["doc_ids"] = doc_ids
-                        rag_data["query"] = user_question
-
-                        tool_call_count += 1
-
-                        logger.info(
-                            "RAG extraction completed",
-                            field_count=len(result.fields),
-                            latency_ms=latency,
-                        )
-
-                        # Emit RAG data received event
-                        if sse_callback := state.get("sse_callback"):
-                            await sse_callback(
-                                "rag_data_received",
-                                {
-                                    "fields_extracted": len(result.fields),
-                                    "doc_count": len(doc_ids),
-                                    "latency_ms": latency,
-                                },
-                                "ask_handler",
-                            )
-
-                    except Exception as e:
-                        logger.error("RAG extraction failed", error=str(e))
-                        tool_results.append({
-                            "tool_name": "rag_gateway:extract_fields",
-                            "input_summary": f"Extract fields for: {user_question[:50]}...",
-                            "output_summary": "",
-                            "latency_ms": 0,
-                            "success": False,
-                            "error": str(e),
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
+        except Exception as e:
+            logger.error("Web search failed", error=str(e))
+            tool_results.append({
+                "tool_name": "tavily:web_search",
+                "input_summary": f"Search: {user_question[:50]}...",
+                "output_summary": "",
+                "latency_ms": 0,
+                "success": False,
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat(),
+                "citations": [],
+            })
 
     logger.info(
-        f"Data fetched: MCP={list(mcp_data.keys())}, RAG={bool(rag_data)} ({tool_call_count} tool calls)"
+        f"Data fetched: MCP={list(mcp_data.keys())}, RAG={bool(rag_data)}, Web={bool(web_data)} ({tool_call_count} tool calls)"
     )
 
     return {
         "mcp_data": mcp_data,
         "rag_data": rag_data,
+        "web_data": web_data,
         "tool_results": tool_results,
         "tool_call_count": tool_call_count,
     }
@@ -361,6 +472,7 @@ async def generate_answer(state: MultiAgentState) -> dict:
     ask_context = working_memory.get("ask_context", {})
     mcp_data = state.get("mcp_data") or {}
     rag_data = state.get("rag_data") or {}
+    web_data = state.get("web_data") or {}
 
     # Combine all available data
     all_data = {}
@@ -370,6 +482,8 @@ async def generate_answer(state: MultiAgentState) -> dict:
         all_data["mcp_data"] = mcp_data
     if rag_data:
         all_data["rag_data"] = rag_data
+    if web_data:
+        all_data["web_data"] = web_data
 
     # Format available data
     if all_data:
