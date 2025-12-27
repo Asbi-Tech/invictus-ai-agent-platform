@@ -1,6 +1,6 @@
-# Ask Mode - Non-Streaming Postman Requests
+# Ask Mode - Streaming Postman Requests
 
-This document contains all Ask mode API request examples for the non-streaming endpoint (`/v1/copilot/chat`).
+This document contains all Ask mode API request examples for the streaming endpoint (`/v1/copilot/stream`).
 
 ## Base URL
 
@@ -25,12 +25,13 @@ http://localhost:8000
 
 ## 1. Simple Question
 
-Minimal payload for a simple Q&A request.
+Minimal payload for a simple Q&A request with streaming response.
 
 **cURL:**
 ```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
+curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
   -d '{
     "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
@@ -48,31 +49,16 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
     "type": "ask"
 }
 ```
-
-**Expected Response:**
-```json
-{
-    "session_id": "37017c42-45c6-4ee7-9ec1-a2f11befc829",
-    "message": "I don't have enough information to determine the target raise for this opportunity.",
-    "tool_results": [],
-    "citations": [],
-    "intent": "ask",
-    "artifact": null,
-    "edit_instructions": null,
-    "hitl_status": null
-}
-```
-
----
 
 ## 2. With Page Context
 
-Include current page context for opportunity-specific queries.
+Include current page context for opportunity-specific queries with streaming response.
 
 **cURL:**
 ```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
+curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
   -d '{
     "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
@@ -118,29 +104,6 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
         }
     },
     "enabled_mcps": ["deals"]
-}
-```
-
-**Expected Response:**
-```json
-{
-    "session_id": "079333ac-a108-48b5-98f4-04b5c3fd2d75",
-    "message": "The risk rating for this deal is **Medium**.",
-    "tool_results": [
-        {
-            "tool_name": "deals:get_opportunity_details",
-            "input_summary": "Get opportunity opp-001",
-            "output_summary": "Retrieved: Wonder Group Inc",
-            "latency_ms": 24.150000000000002,
-            "success": true,
-            "citations": []
-        }
-    ],
-    "citations": [],
-    "intent": "ask",
-    "artifact": null,
-    "edit_instructions": null,
-    "hitl_status": null
 }
 ```
 
@@ -148,12 +111,13 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 
 ## 3. With Document Selection (RAG)
 
-Query with selected documents for RAG-based extraction.
+Query with selected documents for RAG-based extraction with streaming response.
 
 **cURL:**
 ```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
+curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
   -d '{
     "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
@@ -189,18 +153,18 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
     }
 }
 ```
-
 
 ---
 
 ## 4. With Web Search
 
-Enable web search for real-time information.
+Enable web search for real-time information with streaming response.
 
 **cURL:**
 ```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
+curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
   -d '{
     "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
@@ -220,21 +184,20 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
     "web_search_enabled": true
 }
 ```
-
----
 
 ## 6. Comprehensive Examples
 
 ### 6.1 Single-Turn: Web + RAG + MCP
 
-This example combines all three data sources in a single request: MCP for structured data, RAG for document analysis, and Web Search for real-time market information.
+This example combines all three data sources in a single streaming request: MCP for structured data, RAG for document analysis, and Web Search for real-time market information.
 
-**Use Case:** Analyze a deal using internal data (MCP), uploaded documents (RAG), and current market trends (Web).
+**Use Case:** Analyze a deal using internal data (MCP), uploaded documents (RAG), and current market trends (Web) with real-time streaming updates.
 
 **cURL:**
 ```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
+curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
   -d '{
     "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
@@ -270,7 +233,7 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
     "enabled_mcps": ["deals"],
     "web_search_enabled": true
   }'
-
+```
 
 **Postman Body (JSON):**
 ```json
@@ -311,10 +274,9 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 }
 ```
 
-
 ### 6.2 Multi-Turn: Web + RAG + MCP
 
-This example shows a multi-turn conversation leveraging all three data sources, demonstrating context retention across turns.
+This example shows a multi-turn conversation leveraging all three data sources with streaming responses, demonstrating context retention across turns.
 
 #### Turn 1: Initial Comprehensive Query
 
@@ -323,7 +285,7 @@ This example shows a multi-turn conversation leveraging all three data sources, 
 {
     "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
-    "message": "Compare Wonder Group Inc's financials with the projections in the uploaded documents, and tell me how they align with current food-tech valuations",
+    "message": "Compare Wonder Group Inc's financials with the projections from the documents, and tell me how they align with current food-tech valuations",
     "type": "ask",
     "module_id": "deals",
     "page_context": {
@@ -356,7 +318,7 @@ This example shows a multi-turn conversation leveraging all three data sources, 
     "user_id": "user-456",
     "message": "Given those projections, what are the biggest execution risks and how do they compare to risks faced by competitors?",
     "type": "ask",
-    "session_id": "sess-multiturn-002",
+    "session_id": "sess-multiturn-comprehensive-001",
     "selected_docs": {
         "doc_ids": [
             "c75e341a-2953-4672-b85b-6c9b4583b0da",
@@ -373,6 +335,7 @@ This example shows a multi-turn conversation leveraging all three data sources, 
     "web_search_enabled": true
 }
 ```
+
 #### Turn 3: Investment Recommendation
 
 **Postman Body (JSON):**
@@ -382,7 +345,69 @@ This example shows a multi-turn conversation leveraging all three data sources, 
     "user_id": "user-456",
     "message": "Based on everything we've discussed, what's your recommendation on whether we should proceed with this deal?",
     "type": "ask",
-    "session_id": "sess-multiturn-002",
+    "session_id": "sess-multiturn-comprehensive-001",
     "enabled_mcps": ["deals"]
 }
 ```
+
+
+---
+
+## Postman Collection Tips
+
+### Headers
+
+Set these headers for all streaming requests:
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `application/json` |
+| `Accept` | `text/event-stream` |
+
+**Important:** The `Accept: text/event-stream` header is required for streaming endpoints. Postman will display the SSE events in real-time.
+
+### Environment Variables
+
+Create these variables in Postman for easier testing:
+
+| Variable | Example Value | Description |
+|----------|---------------|-------------|
+| `base_url` | `http://localhost:8000` | API base URL |
+| `tenant_id` | `raoof-copilot-test-woner` | Your tenant ID |
+| `user_id` | `user-456` | Test user ID |
+| `session_id` | `{{last_session_id}}` | Auto-populated from response |
+| `opportunity_id` | `opp-001` | Test opportunity ID |
+| `doc_id_1` | `c75e341a-2953-4672-b85b-6c9b4583b0da` | Document ID 1 |
+| `doc_id_2` | `a6077903-0d41-4a16-8131-4442bf4d0046` | Document ID 2 |
+| `storage_url` | `https://stinvictusuaenorthdev.blob.core.windows.net` | Azure storage URL |
+| `storage_prefix` | `tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/` | Storage path prefix |
+
+### Test Script (Extract session_id from SSE)
+
+Add this to the **Tests** tab to automatically capture `session_id` from SSE events:
+
+```javascript
+// Parse SSE events and extract session_id
+var responseText = pm.response.text();
+var lines = responseText.split('\n');
+
+for (var i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('data: ')) {
+        try {
+            var data = JSON.parse(lines[i].substring(6));
+            if (data.event_type === 'status' && data.data && data.data.session_id) {
+                pm.environment.set("last_session_id", data.data.session_id);
+                console.log("Session ID saved: " + data.data.session_id);
+                break;
+            }
+            if (data.event_type === 'final' && data.data && data.data.session_id) {
+                pm.environment.set("last_session_id", data.data.session_id);
+                console.log("Session ID saved: " + data.data.session_id);
+            }
+        } catch (e) {
+            // Skip invalid JSON
+        }
+    }
+}
+```
+

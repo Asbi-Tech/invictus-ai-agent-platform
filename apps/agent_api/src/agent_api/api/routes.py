@@ -340,13 +340,16 @@ def check_hitl_interrupt(state: dict) -> dict | None:
 
     # Method 2: Detect interrupt from state (interrupt_before means node didn't run)
     # Clarification interrupt: clarification_pending is True
-    if state.get("clarification_pending") and not state.get("clarification_responses"):
-        return {
-            "interrupt_type": "clarification",
-            "questions": state.get("clarification_questions", []),
-            "missing_inputs": state.get("intent_analysis", {}).get("missing_inputs", []),
-            "session_id": state.get("session_id"),
-        }
+    # BUT: Skip for "ask" requests - they should always attempt to answer directly
+    request_type = state.get("intent_analysis", {}).get("request_type", "ask")
+    if request_type != "ask":
+        if state.get("clarification_pending") and not state.get("clarification_responses"):
+            return {
+                "interrupt_type": "clarification",
+                "questions": state.get("clarification_questions", []),
+                "missing_inputs": state.get("intent_analysis", {}).get("missing_inputs", []),
+                "session_id": state.get("session_id"),
+            }
 
     # Confirmation interrupt: execution_plan exists but not confirmed
     execution_plan = state.get("execution_plan")
@@ -496,6 +499,11 @@ async def stream_with_hitl(
             ).to_sse_format()
             await asyncio.sleep(0.02)
 
+    # Aggregate citations from all tool results
+    citations = []
+    for tr in result.get("tool_results", []):
+        citations.extend(tr.get("citations", []))
+
     # Emit final event
     final_data = {
         "session_id": session_id,
@@ -503,6 +511,7 @@ async def stream_with_hitl(
         "tool_call_count": result.get("tool_call_count", 0),
         "intent": result.get("current_intent"),
         "current_phase": result.get("current_phase", "complete"),
+        "citations": citations,
     }
 
     # Add type-specific data to final event

@@ -273,7 +273,11 @@ async def check_completeness(state: MultiAgentState) -> dict:
     }
 
     # Determine if we need to enter clarification phase
-    clarification_pending = clarification_needed and len(missing_inputs) > 0
+    # "Ask" requests should never trigger clarification - always attempt to answer
+    if request_type == "ask":
+        clarification_pending = False
+    else:
+        clarification_pending = clarification_needed and len(missing_inputs) > 0
 
     # Emit phase completed event
     if sse_callback := state.get("sse_callback"):

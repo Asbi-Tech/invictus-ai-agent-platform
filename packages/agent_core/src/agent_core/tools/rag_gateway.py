@@ -144,6 +144,7 @@ async def extract_fields(
             user_id=user_id,
             session_id=session_id,
         ),
+        include_bounding_boxes=True,
     )
 
     if system_instructions:
@@ -236,11 +237,10 @@ async def extract_fields(
                         sources=source_chunks,
                     ))
 
-                    # Add to all_sources (avoid duplicates by chunk_id, exclude bounding_boxes)
+                    # Add to all_sources (avoid duplicates by chunk_id)
                     for source in field_sources:
                         chunk_id = source.get("chunk_id", "")
                         if chunk_id and chunk_id not in seen_chunks:
-                            # Create a clean source dict without bounding_boxes (to keep response small)
                             clean_source = {
                                 "source": "rag",
                                 "chunk_id": chunk_id,
@@ -248,6 +248,7 @@ async def extract_fields(
                                 "doc_id": source.get("doc_id", ""),
                                 "page_numbers": source.get("page_numbers", []),
                                 "section_path": source.get("section_path"),
+                                "bounding_boxes": source.get("bounding_boxes", []),
                             }
                             all_sources.append(clean_source)
                             seen_chunks.add(chunk_id)
