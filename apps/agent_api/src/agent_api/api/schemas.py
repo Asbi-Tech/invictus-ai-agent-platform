@@ -141,17 +141,6 @@ class UnifiedChatRequest(BaseModel):
     )
 
 
-class ClarificationQuestionRequest(BaseModel):
-    """A clarification question in the request/response."""
-
-    question_id: str = Field(description="Unique question identifier")
-    question: str = Field(description="The clarification question")
-    options: list[str] | None = Field(
-        default=None, description="Optional predefined answer options"
-    )
-    required: bool = Field(default=True, description="Whether an answer is required")
-
-
 class ResumeRequest(BaseModel):
     """Request to resume a paused execution with user input."""
 
@@ -166,23 +155,6 @@ class ResumeRequest(BaseModel):
     )
     plan_modifications: list[str] | None = Field(
         default=None, description="Requested modifications if confirmation_response is 'modify'"
-    )
-
-
-class ExecutionPlanResponse(BaseModel):
-    """Execution plan returned to user for confirmation."""
-
-    plan_id: str = Field(description="Unique plan identifier")
-    sections: list[dict[str, Any]] = Field(description="Planned document sections")
-    data_requirements: list[dict[str, Any]] = Field(
-        description="Data sources that will be queried"
-    )
-    tool_usage_plan: list[dict[str, Any]] = Field(description="Tools that will be called")
-    template_strategy: str = Field(
-        description="Template strategy: use_existing, modify, or generate_new"
-    )
-    estimated_complexity: str = Field(
-        description="Estimated complexity: simple, moderate, or complex"
     )
 
 

@@ -38,20 +38,11 @@ class Settings(BaseSettings):
     rag_gateway_url: str = Field(..., description="RAG Gateway base URL")
     rag_gateway_api_key: str = Field(default="", description="RAG Gateway API key")
 
-    # Azure AI Search (for reference)
-    azure_search_endpoint: str = Field(default="", description="Azure AI Search endpoint")
-    azure_search_api_key: str = Field(default="", description="Azure AI Search API key")
-    azure_search_index_name: str = Field(default="", description="Azure AI Search index name")
-
     # Tavily (optional)
     tavily_api_key: str = Field(default="", description="Tavily API key for internet search")
 
     # MCP Server URLs
     mcp_deals_url: str = Field(default="http://localhost:8001")
-    mcp_clients_url: str = Field(default="http://localhost:8002")
-    mcp_risk_planning_url: str = Field(default="http://localhost:8003")
-    mcp_reporting_url: str = Field(default="http://localhost:8004")
-    mcp_admin_policy_url: str = Field(default="http://localhost:8005")
 
     @property
     def is_production(self) -> bool:

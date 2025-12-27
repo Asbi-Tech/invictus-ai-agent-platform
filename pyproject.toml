@@ -44,7 +44,6 @@ module = [
     "langchain_openai.*",
     "tavily.*",
     "azure.*",
-    "pyodbc.*",
     "sse_starlette.*",
 ]
 ignore_missing_imports = true

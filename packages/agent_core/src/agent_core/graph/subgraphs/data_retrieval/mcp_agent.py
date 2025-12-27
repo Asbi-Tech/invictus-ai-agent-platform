@@ -3,7 +3,6 @@
 from datetime import datetime
 from typing import Any
 
-from agent_core.tools.mcp_client import get_entity_data, mcp_registry
 from agent_core.tools.deals_mcp import call_deals_tool
 from agent_core.graph.state import MultiAgentState
 from common.logging import get_logger
@@ -95,55 +94,6 @@ async def fetch_mcp_data(state: MultiAgentState) -> dict:
                     sse_callback=state.get("sse_callback"),
                 )
                 tool_call_count += 1
-
-    # Process other entity types
-    entity_type = page_context.get("entity_type")
-    entity_id = page_context.get("entity_id")
-
-    if entity_type and entity_id and entity_type != "opportunity" and tool_call_count < max_tool_calls:
-        domain_map = {
-            "client": "clients",
-            "risk_profile": "risk_planning",
-        }
-        domain = domain_map.get(entity_type)
-
-        if domain and domain in enabled_mcps and mcp_registry.is_available(domain):
-            if sse_callback := state.get("sse_callback"):
-                await sse_callback(
-                    "thinking",
-                    f"Looking up {entity_type} details...",
-                    "data_retrieval",
-                )
-
-            start = datetime.utcnow()
-
-            try:
-                result = await get_entity_data(
-                    domain=domain,
-                    entity_type=entity_type,
-                    entity_id=entity_id,
-                    tenant_id=tenant_id,
-                )
-
-                latency = (datetime.utcnow() - start).total_seconds() * 1000
-
-                tool_results.append({
-                    "tool_name": f"mcp:{domain}:get_{entity_type}",
-                    "input_summary": f"Get {entity_type} {entity_id}",
-                    "output_summary": str(result.data)[:200] if result.success else result.error,
-                    "latency_ms": latency,
-                    "success": result.success,
-                    "error": result.error,
-                    "timestamp": datetime.utcnow().isoformat(),
-                })
-
-                if result.success and result.data:
-                    mcp_data[entity_type] = result.data
-
-                tool_call_count += 1
-
-            except Exception as e:
-                logger.error(f"[MCP] {domain}:get_{entity_type} failed", error=str(e))
 
     # Emit MCP data received event
     if sse_callback := state.get("sse_callback"):

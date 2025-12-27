@@ -5,7 +5,6 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
-from agent_core.tools.mcp_client import get_entity_data, mcp_registry
 from agent_core.tools.deals_mcp import call_deals_tool
 from agent_core.tools.rag_gateway import (
     StorageConfig,
@@ -116,63 +115,7 @@ async def gather_context(state: dict[str, Any]) -> dict[str, Any]:
             except Exception as e:
                 logger.error("Deals MCP call failed", error=str(e))
 
-    # 2. Fallback to generic MCP for other entity types
-    if page_context and tool_call_count < max_tool_calls:
-        entity_type = page_context.get("entity_type")
-        entity_id = page_context.get("entity_id")
-
-        # Skip if already handled as opportunity
-        if entity_type and entity_id and entity_type != "opportunity":
-            # Map entity type to domain
-            domain_map = {
-                "client": "clients",
-                "risk_profile": "risk_planning",
-            }
-            domain = domain_map.get(entity_type)
-
-            if domain and domain in enabled_mcps and mcp_registry.is_available(domain):
-                if sse_callback:
-                    await sse_callback(
-                        "thinking",
-                        f"Looking up {entity_type} details...",
-                        "gather_context",
-                    )
-
-                start = datetime.utcnow()
-
-                try:
-                    result = await get_entity_data(
-                        domain=domain,
-                        entity_type=entity_type,
-                        entity_id=entity_id,
-                        tenant_id=tenant_id,
-                    )
-
-                    latency = (datetime.utcnow() - start).total_seconds() * 1000
-
-                    tool_results.append(
-                        {
-                            "tool_name": f"mcp:{domain}:get_{entity_type}",
-                            "input_summary": f"Get {entity_type} {entity_id}",
-                            "output_summary": (
-                                str(result.data)[:200] if result.success else result.error
-                            ),
-                            "latency_ms": latency,
-                            "success": result.success,
-                            "error": result.error,
-                            "timestamp": datetime.utcnow().isoformat(),
-                        }
-                    )
-
-                    if result.success and result.data:
-                        working_memory[f"{entity_type}_data"] = result.data
-
-                    tool_call_count += 1
-
-                except Exception as e:
-                    logger.error("MCP call failed", error=str(e), domain=domain)
-
-    # 3. Query RAG Gateway if documents are selected and we have a question
+    # 2. Query RAG Gateway if documents are selected and we have a question
     # Combine document_ids and selected_docs.doc_ids
     doc_ids = document_ids or []
     if selected_docs and selected_docs.get("doc_ids"):
@@ -251,7 +194,7 @@ async def gather_context(state: dict[str, Any]) -> dict[str, Any]:
                 }
             )
 
-    # 4. Web search with Tavily if enabled
+    # 3. Web search with Tavily if enabled
     web_search_enabled = tool_policy.get("web_search_enabled", False)
 
     if web_search_enabled and user_question and tool_call_count < max_tool_calls:

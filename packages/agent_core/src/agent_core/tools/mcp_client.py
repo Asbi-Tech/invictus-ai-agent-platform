@@ -36,10 +36,6 @@ class MCPClientRegistry:
         """Load MCP server URLs from settings."""
         self._servers = {
             "deals": settings.mcp_deals_url,
-            "clients": settings.mcp_clients_url,
-            "risk_planning": settings.mcp_risk_planning_url,
-            "reporting": settings.mcp_reporting_url,
-            "admin_policy": settings.mcp_admin_policy_url,
         }
 
     def register(self, domain: str, url: str) -> None:
@@ -208,59 +204,3 @@ async def call_domain_tool(
         )
 
     return await call_mcp_tool(server_url, tool_name, arguments, timeout)
-
-
-async def get_entity_data(
-    domain: str,
-    entity_type: str,
-    entity_id: str,
-    tenant_id: str,
-) -> MCPToolResult:
-    """
-    Get entity data from an MCP server.
-
-    This is a convenience wrapper for common entity retrieval patterns.
-
-    Args:
-        domain: The domain name
-        entity_type: The type of entity (e.g., "opportunity", "client")
-        entity_id: The entity ID
-        tenant_id: The tenant ID for access control
-
-    Returns:
-        MCPToolResult with the entity data or error
-    """
-    tool_name = f"get_{entity_type}"
-    arguments = {
-        f"{entity_type}_id": entity_id,
-        "tenant_id": tenant_id,
-    }
-
-    return await call_domain_tool(domain, tool_name, arguments)
-
-
-async def list_entity_documents(
-    domain: str,
-    entity_type: str,
-    entity_id: str,
-    tenant_id: str,
-) -> MCPToolResult:
-    """
-    List documents associated with an entity.
-
-    Args:
-        domain: The domain name
-        entity_type: The type of entity
-        entity_id: The entity ID
-        tenant_id: The tenant ID for access control
-
-    Returns:
-        MCPToolResult with the document list or error
-    """
-    tool_name = f"list_{entity_type}_documents"
-    arguments = {
-        f"{entity_type}_id": entity_id,
-        "tenant_id": tenant_id,
-    }
-
-    return await call_domain_tool(domain, tool_name, arguments)

@@ -113,64 +113,6 @@ async def get_opportunity_details(
     )
 
 
-async def get_prescreening_report(
-    opportunity_id: str,
-    tenant_id: str,
-    user_id: str | None = None,
-    include_sections: list[str] | None = None,
-) -> DealsMCPToolResult:
-    """Get the prescreening report for an opportunity."""
-    args: dict[str, Any] = {
-        "opportunity_id": opportunity_id,
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-    }
-    if include_sections:
-        args["include_sections"] = include_sections
-    return await call_deals_tool("get_prescreening_report", args)
-
-
-async def get_investment_memo(
-    opportunity_id: str,
-    tenant_id: str,
-    user_id: str | None = None,
-    version: str | None = None,
-    section: str | None = None,
-) -> DealsMCPToolResult:
-    """Get the investment memo for an opportunity."""
-    args: dict[str, Any] = {
-        "opportunity_id": opportunity_id,
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-    }
-    if version:
-        args["version"] = version
-    if section:
-        args["section"] = section
-    return await call_deals_tool("get_investment_memo", args)
-
-
-async def get_opportunity_activity(
-    opportunity_id: str,
-    tenant_id: str,
-    user_id: str | None = None,
-    activity_types: list[str] | None = None,
-    limit: int = 20,
-    offset: int = 0,
-) -> DealsMCPToolResult:
-    """Get the activity timeline for an opportunity."""
-    args: dict[str, Any] = {
-        "opportunity_id": opportunity_id,
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-        "limit": limit,
-        "offset": offset,
-    }
-    if activity_types:
-        args["activity_types"] = activity_types
-    return await call_deals_tool("get_opportunity_activity", args)
-
-
 def list_available_tools() -> list[str]:
     """List all available Deals MCP tools."""
     return DEALS_TOOLS.copy()

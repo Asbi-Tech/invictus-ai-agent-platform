@@ -26,7 +26,7 @@ class WebSearchResult:
 async def web_search(
     query: str,
     search_depth: str = "basic",
-    max_results: int = 5,
+    max_results: int = 2,
     include_answer: bool = True,
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
@@ -153,7 +153,7 @@ async def search_for_context(
     return await web_search(
         query=query,
         search_depth="advanced",
-        max_results=5,
+        max_results=2,
         include_answer=True,
         exclude_domains=exclude_domains,
     )
