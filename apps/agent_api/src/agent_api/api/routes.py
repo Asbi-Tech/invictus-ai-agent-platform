@@ -26,7 +26,7 @@ from agent_api.api.schemas import (
     UnifiedChatRequest,
 )
 from agent_core.graph import compile_multi_agent_graph
-from agent_core.memory import CosmosDBCheckpointer
+from agent_core.memory import CosmosDBCheckpointer, ArtifactStorage
 from common.callback_registry import register_sse_callback
 from common.config import get_settings
 from common.logging import get_logger
@@ -36,9 +36,10 @@ settings = get_settings()
 
 router = APIRouter(prefix="/v1/copilot", tags=["copilot"])
 
-# Initialize checkpointer lazily to avoid connection errors at import time
+# Initialize checkpointer and artifact storage lazily to avoid connection errors at import time
 _checkpointer = None
 _agent = None
+_artifact_storage = None
 
 
 def get_checkpointer() -> CosmosDBCheckpointer | None:
@@ -68,6 +69,26 @@ def get_agent():
         checkpointer = get_checkpointer()
         _agent = compile_multi_agent_graph(checkpointer=checkpointer)
     return _agent
+
+
+def get_artifact_storage() -> ArtifactStorage | None:
+    """Get or create the artifact storage instance."""
+    global _artifact_storage
+    if _artifact_storage is None:
+        try:
+            _artifact_storage = ArtifactStorage(
+                endpoint=settings.cosmos_endpoint,
+                key=settings.cosmos_key,
+                database_name=settings.cosmos_database_name,
+                container_name=settings.cosmos_artifacts_container,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to initialize artifact storage, artifact persistence disabled",
+                error=str(e),
+            )
+            return None
+    return _artifact_storage
 
 
 # Type alias for SSE callback
@@ -200,14 +221,61 @@ def build_initial_state(
         }
 
     # Add current artifact for edit mode
+    # If artifact_id is provided but content is empty, try to fetch from storage
     if request.current_artifact:
-        state["current_artifact"] = {
-            "artifact_id": request.current_artifact.artifact_id,
-            "artifact_type": request.current_artifact.artifact_type,
-            "title": request.current_artifact.title,
-            "content": request.current_artifact.content,
-            "metadata": request.current_artifact.metadata,
-        }
+        artifact_input = request.current_artifact
+
+        # If content is empty but artifact_id is provided, fetch from storage
+        if not artifact_input.content and artifact_input.artifact_id:
+            artifact_storage = get_artifact_storage()
+            if artifact_storage:
+                stored_artifact = artifact_storage.get_artifact(
+                    tenant_id=request.tenant_id,
+                    artifact_id=artifact_input.artifact_id,
+                )
+                if stored_artifact:
+                    logger.info(
+                        "Fetched artifact from storage",
+                        artifact_id=artifact_input.artifact_id,
+                    )
+                    state["current_artifact"] = {
+                        "artifact_id": stored_artifact["artifact_id"],
+                        "artifact_type": stored_artifact.get("artifact_type", "document"),
+                        "title": stored_artifact.get("title", ""),
+                        "content": stored_artifact.get("content", ""),
+                        "metadata": stored_artifact.get("metadata", {}),
+                    }
+                else:
+                    # Artifact not found in storage - will trigger clarification
+                    logger.warning(
+                        "Artifact not found in storage",
+                        artifact_id=artifact_input.artifact_id,
+                    )
+                    state["current_artifact"] = {
+                        "artifact_id": artifact_input.artifact_id,
+                        "artifact_type": artifact_input.artifact_type,
+                        "title": artifact_input.title,
+                        "content": "",  # Empty content will trigger clarification
+                        "metadata": artifact_input.metadata,
+                    }
+            else:
+                # No storage available - use provided data as-is
+                state["current_artifact"] = {
+                    "artifact_id": artifact_input.artifact_id,
+                    "artifact_type": artifact_input.artifact_type,
+                    "title": artifact_input.title,
+                    "content": artifact_input.content,
+                    "metadata": artifact_input.metadata,
+                }
+        else:
+            # Content provided in request - use as-is
+            state["current_artifact"] = {
+                "artifact_id": artifact_input.artifact_id,
+                "artifact_type": artifact_input.artifact_type,
+                "title": artifact_input.title,
+                "content": artifact_input.content,
+                "metadata": artifact_input.metadata,
+            }
 
     # Handle selected_docs (new way) or document_ids (deprecated)
     if request.selected_docs:
@@ -657,6 +725,28 @@ async def stream_with_hitl(
             },
         }
 
+    # Save artifacts to storage (for agent create mode)
+    if request.type == RequestType.AGENT and artifact_data:
+        artifact_storage = get_artifact_storage()
+        if artifact_storage:
+            try:
+                artifact_storage.save_artifact(
+                    tenant_id=initial_state.get("tenant_id", "unknown"),
+                    session_id=session_id,
+                    artifact=artifact_data,
+                )
+                logger.info(
+                    "Saved artifact to storage",
+                    artifact_id=artifact_data.get("artifact_id"),
+                    session_id=session_id,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to save artifact to storage",
+                    error=str(e),
+                    artifact_id=artifact_data.get("artifact_id"),
+                )
+
     # Emit final event with dual response structure
     final_data = {
         "session_id": session_id,
@@ -923,6 +1013,30 @@ async def stream_resume_with_hitl(
                 "message_length": len(last_message) if last_message else 0,
             },
         }
+
+    # Save artifacts to storage (for agent create mode, on resume)
+    if request.type == RequestType.AGENT and artifact_data:
+        artifact_storage = get_artifact_storage()
+        if artifact_storage:
+            try:
+                # Get tenant_id from the result state
+                tenant_id = result.get("tenant_id", "unknown")
+                artifact_storage.save_artifact(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    artifact=artifact_data,
+                )
+                logger.info(
+                    "Saved artifact to storage (resume)",
+                    artifact_id=artifact_data.get("artifact_id"),
+                    session_id=session_id,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to save artifact to storage (resume)",
+                    error=str(e),
+                    artifact_id=artifact_data.get("artifact_id"),
+                )
 
     # Emit final event
     final_data = {

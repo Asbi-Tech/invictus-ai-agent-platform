@@ -72,10 +72,13 @@ async def analyze_request(state: MultiAgentState) -> dict:
     Analyze the user's request to classify intent and detect document type.
 
     This node:
-    1. Extracts the user message and context
-    2. Uses LLM to classify the request type
+    1. Checks if agent_case is explicitly set (from API request)
+    2. If not, uses LLM to classify the request type
     3. Identifies the target document type if applicable
     4. Returns intent analysis results
+
+    Note: When agent_case is explicitly provided in the request (edit, create, fill),
+    it takes precedence over LLM classification to ensure user intent is respected.
     """
     logger.info("Analyzing request intent")
 
@@ -83,6 +86,10 @@ async def analyze_request(state: MultiAgentState) -> dict:
     user_message = get_last_human_message(state)
     page_context = state.get("page_context") or {}
     additional_prompt = state.get("additional_prompt") or ""
+
+    # Check if agent_case is explicitly set from the API request
+    # This takes precedence over LLM classification
+    explicit_agent_case = state.get("agent_case")
 
     # Emit thinking event
     if sse_callback := get_callback_for_state(state):
@@ -114,12 +121,25 @@ async def analyze_request(state: MultiAgentState) -> dict:
 
         intent_data = json.loads(response_text)
 
+        # Use explicit agent_case if provided, otherwise use LLM classification
+        if explicit_agent_case in ["create", "edit", "fill"]:
+            request_type = explicit_agent_case
+            logger.info(f"Using explicit agent_case: {explicit_agent_case}")
+            # When agent_case is explicit, don't use LLM's missing_inputs/clarification_needed
+            # These will be determined by check_completeness() based on actual state
+            llm_missing_inputs = []
+            llm_clarification_needed = False
+        else:
+            request_type = intent_data.get("request_type", "ask")
+            llm_missing_inputs = intent_data.get("missing_inputs", [])
+            llm_clarification_needed = intent_data.get("clarification_needed", False)
+
         intent_analysis: IntentAnalysis = {
-            "request_type": intent_data.get("request_type", "ask"),
+            "request_type": request_type,
             "document_type": intent_data.get("document_type"),
             "entities_detected": intent_data.get("entities_detected", []),
-            "missing_inputs": intent_data.get("missing_inputs", []),
-            "clarification_needed": intent_data.get("clarification_needed", False),
+            "missing_inputs": llm_missing_inputs,
+            "clarification_needed": llm_clarification_needed,
             "confidence": intent_data.get("confidence", 0.8),
         }
 
@@ -131,8 +151,14 @@ async def analyze_request(state: MultiAgentState) -> dict:
 
     except (json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Failed to parse intent response: {e}, defaulting to 'ask'")
+        # Still respect explicit agent_case even on parse failure
+        if explicit_agent_case in ["create", "edit", "fill"]:
+            request_type = explicit_agent_case
+        else:
+            request_type = "ask"
+
         intent_analysis: IntentAnalysis = {
-            "request_type": "ask",
+            "request_type": request_type,
             "document_type": None,
             "entities_detected": [],
             "missing_inputs": [],
@@ -251,19 +277,23 @@ async def check_completeness(state: MultiAgentState) -> dict:
                     missing_inputs.append("opportunity context")
                 clarification_needed = True
 
-    elif request_type == "edit":
-        # Edit mode requires an existing artifact
-        if not current_artifact:
+    elif request_type in ["edit", "extend"]:
+        # Edit and extend modes require an existing artifact with content
+        # Check if artifact exists AND has actual content (not just the object)
+        has_artifact_content = (
+            current_artifact
+            and isinstance(current_artifact, dict)
+            and current_artifact.get("content")
+        )
+        if not has_artifact_content:
             if "current artifact" not in missing_inputs:
                 missing_inputs.append("current artifact")
             clarification_needed = True
-
-    elif request_type == "extend":
-        # Extend mode also requires an existing artifact
-        if not current_artifact:
-            if "current artifact" not in missing_inputs:
-                missing_inputs.append("current artifact")
-            clarification_needed = True
+            logger.info(
+                f"Edit/extend mode missing artifact content. "
+                f"Has artifact: {current_artifact is not None}, "
+                f"Has content: {bool(current_artifact.get('content') if current_artifact else False)}"
+            )
 
     # Update intent analysis
     updated_intent: IntentAnalysis = {

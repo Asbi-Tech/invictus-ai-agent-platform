@@ -213,8 +213,17 @@ async def collect_sections(state: MultiAgentState) -> dict:
 
     section_assignments = state.get("section_assignments", [])
     intent_analysis = state.get("intent_analysis") or {}
-    document_type = intent_analysis.get("document_type", "document")
     mcp_data = state.get("mcp_data") or {}
+
+    # For edit mode, prefer artifact_type from current_artifact
+    # Fall back to intent_analysis, then to "document" default
+    # Note: Using `or` chain because .get() returns None when key exists but value is None
+    current_artifact = state.get("current_artifact") or {}
+    document_type = (
+        current_artifact.get("artifact_type")
+        or intent_analysis.get("document_type")
+        or "document"
+    )
 
     # Build document content
     sections_content = []

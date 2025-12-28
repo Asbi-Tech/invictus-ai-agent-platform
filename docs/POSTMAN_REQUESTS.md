@@ -19,6 +19,7 @@ http://localhost:8000
   - [1.5 Resume - Plan Modify](#15-resume---plan-modify)
   - [1.6 Resume - Plan Cancelled](#16-resume---plan-cancelled)
 - [2. Set 2: Editing Existing Artifact](#2-set-2-editing-existing-artifact)
+  - [2.1 Edit Mode](#21-edit-mode)
 - [3. Set 3: Fill Mode](#3-set-3-fill-mode)
 - [4. Response Structures](#4-response-structures)
   - [4.1 HITL Events (Awaiting Confirmation)](#41-hitl-events-awaiting-confirmation)
@@ -363,7 +364,17 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
 
 ## 2. Set 2: Editing Existing Artifact
 
-Edit an existing artifact. This mode allows you to modify content that has already been created.
+Edit mode allows you to modify content that has already been created. Provide the `artifact_id` and optionally a `session_id` to maintain conversation context from the create flow.
+
+### 2.1 Edit Mode
+
+Edit an existing artifact by providing the `artifact_id`. The system automatically fetches the content from storage.
+
+**Parameters:**
+- `artifact_id` (required): The ID of the artifact to edit
+- `session_id` (optional): Include the session ID from the create flow to maintain conversation context
+
+**Note:** The artifact must exist in CosmosDB storage (created via a previous agent create flow).
 
 **cURL:**
 ```bash
@@ -373,27 +384,15 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
   -d '{
     "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
+    "session_id": "YOUR_SESSION_ID_FROM_CREATE_FLOW",
     "message": "Add a competitor analysis section comparing to DoorDash and Uber Eats",
     "type": "agent",
     "agent_case": "edit",
     "current_artifact": {
-        "artifact_id": "art-memo-001",
-        "artifact_type": "investment_memo",
-        "title": "Wonder Group Inc - Investment Memo",
-        "content": "# Investment Memo\n\n## Executive Summary\nWonder Group Inc is building the first fully vertically integrated food delivery platform...",
-        "metadata": {}
+        "artifact_id": "e0d1885e"
     },
     "enabled_mcps": ["deals"],
-    "web_search_enabled": true,
-    "selected_docs": {
-        "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
-        "doc_sets": ["due_diligence"],
-        "storage": {
-            "account_url": "https://stinvictusuaenorthdev.blob.core.windows.net",
-            "filesystem": "documents",
-            "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
-        }
-    }
+    "web_search_enabled": true
   }'
 ```
 
@@ -402,29 +401,23 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
 {
     "tenant_id": "raoof-copilot-test-woner",
     "user_id": "user-456",
+    "session_id": "YOUR_SESSION_ID_FROM_CREATE_FLOW",
     "message": "Add a competitor analysis section comparing to DoorDash and Uber Eats",
     "type": "agent",
     "agent_case": "edit",
     "current_artifact": {
-        "artifact_id": "art-memo-001",
-        "artifact_type": "investment_memo",
-        "title": "Wonder Group Inc - Investment Memo",
-        "content": "# Investment Memo\n\n## Executive Summary\nWonder Group Inc is building the first fully vertically integrated food delivery platform...",
-        "metadata": {}
+        "artifact_id": "e0d1885e"
     },
     "enabled_mcps": ["deals"],
-    "web_search_enabled": true,
-    "selected_docs": {
-        "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
-        "doc_sets": ["due_diligence"],
-        "storage": {
-            "account_url": "https://stinvictusuaenorthdev.blob.core.windows.net",
-            "filesystem": "documents",
-            "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
-        }
-    }
+    "web_search_enabled": true
 }
 ```
+
+**How it works:**
+1. The system receives the request with `artifact_id` (and optionally `session_id`)
+2. It queries CosmosDB artifacts container for the artifact content
+3. If `session_id` is provided, conversation context from the create flow is maintained
+4. If artifact not found, the system will request clarification (asking for the artifact content)
 
 ---
 

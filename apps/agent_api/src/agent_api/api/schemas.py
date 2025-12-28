@@ -78,12 +78,21 @@ class DocumentSelectionRequest(BaseModel):
 
 
 class ArtifactInput(BaseModel):
-    """Current artifact being edited (for agent edit mode)."""
+    """Current artifact being edited (for agent edit mode).
+
+    When artifact_id is provided without content, the system will fetch
+    the artifact content from storage automatically.
+    """
 
     artifact_id: str = Field(description="Unique artifact identifier")
-    artifact_type: str = Field(description="Type: memo, report, strategy_doc, summary")
-    title: str = Field(description="Artifact title")
-    content: str = Field(description="Markdown content of the artifact")
+    artifact_type: str = Field(
+        default="document", description="Type: memo, report, strategy_doc, summary"
+    )
+    title: str = Field(default="", description="Artifact title")
+    content: str = Field(
+        default="",
+        description="Markdown content (optional if artifact exists in storage)",
+    )
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
