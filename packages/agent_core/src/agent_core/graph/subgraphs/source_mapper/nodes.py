@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Any
 
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 from agent_core.graph.state import MultiAgentState, SourceLedger, SourceRef
 
@@ -17,7 +18,7 @@ async def build_ledger(state: MultiAgentState) -> dict:
     """
     logger.info("Building source ledger")
 
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_started",
             {"phase": "source_mapping", "message": "Building source attribution..."},
@@ -121,7 +122,7 @@ async def map_to_sections(state: MultiAgentState) -> dict:
     }
 
     # Emit source mapped event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "source_mapped",
             {
@@ -132,7 +133,7 @@ async def map_to_sections(state: MultiAgentState) -> dict:
         )
 
     # Emit phase completed
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_completed",
             {

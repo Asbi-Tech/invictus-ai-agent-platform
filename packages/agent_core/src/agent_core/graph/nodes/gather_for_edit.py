@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 from agent_core.tools.deals_mcp import call_deals_tool
 
@@ -87,7 +88,7 @@ async def gather_for_edit(state: dict[str, Any]) -> dict[str, Any]:
     page_context = state.get("page_context", {})
     tool_policy = state.get("tool_policy", {})
     tenant_id = state.get("tenant_id", "")
-    sse_callback = state.get("sse_callback")
+    sse_callback = get_callback_for_state(state)
 
     enabled_mcps = tool_policy.get("enabled_mcps", ["deals"])
     tool_call_count = state.get("tool_call_count", 0)

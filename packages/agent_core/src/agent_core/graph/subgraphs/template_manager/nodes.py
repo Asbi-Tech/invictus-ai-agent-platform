@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Any
 
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 from agent_core.graph.state import MultiAgentState
 
@@ -58,7 +59,7 @@ async def select_template(state: MultiAgentState) -> dict:
     """
     logger.info("Selecting template")
 
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_started",
             {"phase": "template", "message": "Preparing document template..."},
@@ -73,7 +74,7 @@ async def select_template(state: MultiAgentState) -> dict:
     template = TEMPLATES.get(document_type, TEMPLATES["custom_report"])
 
     # Emit template selected event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "template_selected",
             {
@@ -204,7 +205,7 @@ async def adapt_template(state: MultiAgentState) -> dict:
         section_assignments.append(assignment)
 
     # Emit template adapted event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "template_adapted",
             {

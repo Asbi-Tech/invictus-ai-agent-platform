@@ -22,6 +22,9 @@ from agent_core.graph.subgraphs.section_writer import create_section_writer_subg
 from agent_core.graph.subgraphs.review import create_review_subgraph
 from agent_core.graph.subgraphs.source_mapper import create_source_mapper_subgraph
 from agent_core.graph.subgraphs.ask_handler import create_ask_handler_subgraph
+from agent_core.graph.subgraphs.fill_handler import create_fill_handler_subgraph
+from agent_core.graph.subgraphs.summary_handler import create_summary_handler_subgraph
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -55,7 +58,7 @@ async def ingest_context(state: MultiAgentState) -> dict:
         raise ValueError("tenant_id and user_id are required")
 
     # Emit initial event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "status",
             {"status": "processing", "message": "Starting multi-agent processing..."},
@@ -121,7 +124,7 @@ async def finalize(state: MultiAgentState) -> dict:
     messages.append(AIMessage(content=message))
 
     # Emit final event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "final",
             {
@@ -168,10 +171,14 @@ def route_after_intent(state: MultiAgentState) -> str:
 
 
 def route_after_confirmation(state: MultiAgentState) -> str:
-    """Route based on confirmation response."""
+    """Route based on confirmation response and agent case."""
     response = state.get("plan_confirmation_response", "cancelled")
 
     if response == "approved":
+        # Check if this is fill mode
+        agent_case = state.get("agent_case")
+        if agent_case == "fill":
+            return "fill_handler"
         return "data_retrieval"
     elif response == "modify":
         return "planning"
@@ -203,7 +210,19 @@ def create_multi_agent_graph() -> StateGraph:
             -> confirmation_gate (INTERRUPT)
             -> [conditional]
                 -> approved: data_retrieval -> synthesis -> template_manager
-                            -> section_writers -> review -> source_mapper -> finalize
+                            -> section_writers -> review -> source_mapper
+                            -> summary_handler -> finalize
+                -> modify: -> planning (loop)
+                -> cancelled: -> finalize
+
+    Flow (Agent Mode - Fill):
+        ingest_context
+            -> intent_analyzer
+            -> [conditional] clarification (if needed)
+            -> planning
+            -> confirmation_gate (INTERRUPT)
+            -> [conditional]
+                -> approved: fill_handler -> summary_handler -> finalize
                 -> modify: -> planning (loop)
                 -> cancelled: -> finalize
 
@@ -229,6 +248,8 @@ def create_multi_agent_graph() -> StateGraph:
     graph.add_node("section_writers", create_section_writer_subgraph().compile())
     graph.add_node("review", create_review_subgraph().compile())
     graph.add_node("source_mapper", create_source_mapper_subgraph().compile())
+    graph.add_node("fill_handler", create_fill_handler_subgraph().compile())
+    graph.add_node("summary_handler", create_summary_handler_subgraph().compile())
 
     # === Set Entry Point ===
     graph.set_entry_point("ingest_context")
@@ -258,24 +279,31 @@ def create_multi_agent_graph() -> StateGraph:
     # Planning -> Confirmation
     graph.add_edge("planning", "confirmation_gate")
 
-    # Confirmation -> Data Retrieval, Planning (loop), or Finalize
+    # Confirmation -> Data Retrieval, Fill Handler, Planning (loop), or Finalize
     graph.add_conditional_edges(
         "confirmation_gate",
         route_after_confirmation,
         {
             "data_retrieval": "data_retrieval",
+            "fill_handler": "fill_handler",
             "planning": "planning",
             "finalize": "finalize",
         },
     )
 
-    # Data Retrieval -> Synthesis -> Template -> Sections -> Review -> Sources -> Finalize
+    # Fill Handler -> Summary Handler (fill mode path)
+    graph.add_edge("fill_handler", "summary_handler")
+
+    # Data Retrieval -> Synthesis -> Template -> Sections -> Review -> Sources -> Summary -> Finalize
     graph.add_edge("data_retrieval", "synthesis")
     graph.add_edge("synthesis", "template_manager")
     graph.add_edge("template_manager", "section_writers")
     graph.add_edge("section_writers", "review")
     graph.add_edge("review", "source_mapper")
-    graph.add_edge("source_mapper", "finalize")
+    graph.add_edge("source_mapper", "summary_handler")
+
+    # Summary Handler -> Finalize (agent mode path)
+    graph.add_edge("summary_handler", "finalize")
 
     # Finalize -> END
     graph.add_edge("finalize", END)

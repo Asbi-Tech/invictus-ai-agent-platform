@@ -7,6 +7,7 @@ from uuid import uuid4
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import AzureChatOpenAI
 
+from common.callback_registry import get_callback_for_state
 from common.config import get_settings
 from common.logging import get_logger
 
@@ -161,7 +162,7 @@ async def generate_artifact(state: dict[str, Any]) -> dict[str, Any]:
     messages = state.get("messages", [])
     additional_prompt = state.get("additional_prompt", "")
     working_memory = state.get("working_memory", {})
-    sse_callback = state.get("sse_callback")
+    sse_callback = get_callback_for_state(state)
 
     # Emit thinking event
     if sse_callback:

@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Any
 
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -26,7 +27,7 @@ async def finalize_agent(state: dict[str, Any]) -> dict[str, Any]:
     tool_results = state.get("tool_results", [])
     tool_call_count = state.get("tool_call_count", 0)
     error_count = state.get("error_count", 0)
-    sse_callback = state.get("sse_callback")
+    sse_callback = get_callback_for_state(state)
 
     # Emit completion status
     if sse_callback:

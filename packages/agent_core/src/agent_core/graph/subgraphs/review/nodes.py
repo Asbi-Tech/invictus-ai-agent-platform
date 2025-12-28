@@ -5,6 +5,7 @@ from datetime import datetime
 
 from langchain_openai import AzureChatOpenAI
 
+from common.callback_registry import get_callback_for_state
 from common.config import get_settings
 from common.logging import get_logger
 from agent_core.graph.state import MultiAgentState, ReviewResult, ReviewIssue
@@ -58,7 +59,7 @@ async def check_coherence(state: MultiAgentState) -> dict:
     """
     logger.info("Checking document coherence")
 
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "review_started",
             {"message": "Reviewing document quality..."},
@@ -186,7 +187,7 @@ async def generate_suggestions(state: MultiAgentState) -> dict:
         suggestions.insert(0, "Address high-priority issues before finalizing")
 
     # Emit review issue events
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         for issue in issues[:5]:  # Emit up to 5 issues
             await sse_callback(
                 "review_issue_found",
@@ -201,7 +202,7 @@ async def generate_suggestions(state: MultiAgentState) -> dict:
     }
 
     # Emit review completed
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "review_completed",
             {

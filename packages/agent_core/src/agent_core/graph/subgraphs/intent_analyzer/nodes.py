@@ -6,6 +6,7 @@ from datetime import datetime
 from langchain_core.messages import HumanMessage
 from langchain_openai import AzureChatOpenAI
 
+from common.callback_registry import get_callback_for_state
 from common.config import get_settings
 from common.logging import get_logger
 from agent_core.graph.state import MultiAgentState, IntentAnalysis
@@ -84,7 +85,7 @@ async def analyze_request(state: MultiAgentState) -> dict:
     additional_prompt = state.get("additional_prompt") or ""
 
     # Emit thinking event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_started",
             {"phase": "intent", "message": "Analyzing your request..."},
@@ -140,7 +141,7 @@ async def analyze_request(state: MultiAgentState) -> dict:
         }
 
     # Emit intent detected event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "intent_detected",
             {
@@ -153,7 +154,6 @@ async def analyze_request(state: MultiAgentState) -> dict:
 
     return {
         "intent_analysis": intent_analysis,
-        "request_type": intent_analysis["request_type"],
         "document_type": intent_analysis["document_type"],
         "current_phase": "intent",
     }
@@ -201,7 +201,7 @@ async def detect_entities(state: MultiAgentState) -> dict:
     }
 
     # Emit entities detected event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "entities_detected",
             {"entities": entities_detected},
@@ -280,7 +280,7 @@ async def check_completeness(state: MultiAgentState) -> dict:
         clarification_pending = clarification_needed and len(missing_inputs) > 0
 
     # Emit phase completed event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_completed",
             {

@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import AzureChatOpenAI
 
+from common.callback_registry import get_callback_for_state
 from common.config import get_settings
 from common.logging import get_logger
 from agent_core.graph.state import MultiAgentState
@@ -76,7 +77,7 @@ async def gather_context(state: MultiAgentState) -> dict:
     logger.info("Gathering context for ask mode")
 
     # Emit thinking event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "thinking",
             {"message": "Gathering context to answer your question..."},
@@ -148,7 +149,7 @@ async def fetch_data(state: MultiAgentState) -> dict:
             break
 
     # Emit thinking event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "thinking",
             {"message": "Fetching data from enabled tools..."},
@@ -163,7 +164,7 @@ async def fetch_data(state: MultiAgentState) -> dict:
             logger.info(f"[MCP] Calling deals:get_opportunity_details for {opportunity_id}")
 
             # Emit fetching event
-            if sse_callback := state.get("sse_callback"):
+            if sse_callback := get_callback_for_state(state):
                 await sse_callback(
                     "fetching_mcp_data",
                     {"domain": "deals", "message": "Fetching opportunity details..."},
@@ -214,7 +215,7 @@ async def fetch_data(state: MultiAgentState) -> dict:
                 })
 
     # Emit MCP data received event
-    if mcp_data and (sse_callback := state.get("sse_callback")):
+    if mcp_data and (sse_callback := get_callback_for_state(state)):
         await sse_callback(
             "mcp_data_received",
             {
@@ -235,7 +236,7 @@ async def fetch_data(state: MultiAgentState) -> dict:
             storage_dict = selected_docs.get("storage")
             if storage_dict and user_question:
                 # Emit fetching event
-                if sse_callback := state.get("sse_callback"):
+                if sse_callback := get_callback_for_state(state):
                     await sse_callback(
                         "fetching_rag_data",
                         {
@@ -303,7 +304,7 @@ async def fetch_data(state: MultiAgentState) -> dict:
                     )
 
                     # Emit RAG data received event
-                    if sse_callback := state.get("sse_callback"):
+                    if sse_callback := get_callback_for_state(state):
                         await sse_callback(
                             "rag_data_received",
                             {
@@ -333,7 +334,7 @@ async def fetch_data(state: MultiAgentState) -> dict:
 
     if web_search_enabled and tool_call_count < max_tool_calls and user_question:
         # Emit fetching event
-        if sse_callback := state.get("sse_callback"):
+        if sse_callback := get_callback_for_state(state):
             await sse_callback(
                 "fetching_web_data",
                 {"message": "Searching the web for relevant information..."},
@@ -396,7 +397,7 @@ async def fetch_data(state: MultiAgentState) -> dict:
                 )
 
                 # Emit web data received event
-                if sse_callback := state.get("sse_callback"):
+                if sse_callback := get_callback_for_state(state):
                     await sse_callback(
                         "web_data_received",
                         {
@@ -457,7 +458,7 @@ async def generate_answer(state: MultiAgentState) -> dict:
     logger.info("Generating answer for ask mode")
 
     # Emit thinking event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "thinking",
             {"message": "Generating answer..."},
@@ -512,7 +513,7 @@ async def generate_answer(state: MultiAgentState) -> dict:
         answer = "I apologize, but I encountered an error while generating your answer. Please try again."
 
     # Emit assistant delta for streaming
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         # Stream the answer in chunks
         chunk_size = 50
         for i in range(0, len(answer), chunk_size):
@@ -553,7 +554,7 @@ async def finalize_ask(state: MultiAgentState) -> dict:
     })
 
     # Emit final event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_completed",
             {

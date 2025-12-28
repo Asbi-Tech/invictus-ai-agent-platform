@@ -8,6 +8,7 @@ from typing import Any
 
 from langchain_openai import AzureChatOpenAI
 
+from common.callback_registry import get_callback_for_state
 from common.config import get_settings
 from common.logging import get_logger
 from agent_core.graph.state import MultiAgentState, SectionAssignment
@@ -64,7 +65,7 @@ async def prepare_sections(state: MultiAgentState) -> dict:
     """
     logger.info("Preparing sections for writing")
 
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_started",
             {"phase": "generation", "message": "Writing document sections..."},
@@ -95,7 +96,7 @@ async def write_sections(state: MultiAgentState) -> dict:
     document_type = intent_analysis.get("document_type", "document")
     additional_prompt = state.get("additional_prompt") or ""
     user_question = get_user_question(state)
-    sse_callback = state.get("sse_callback")
+    sse_callback = get_callback_for_state(state)
 
     # Gather data for sections
     mcp_data = state.get("mcp_data") or {}
@@ -250,7 +251,7 @@ async def collect_sections(state: MultiAgentState) -> dict:
     }
 
     # Emit artifact update
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "artifact_update",
             artifact,

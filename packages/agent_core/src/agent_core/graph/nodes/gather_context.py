@@ -12,6 +12,7 @@ from agent_core.tools.rag_gateway import (
     generate_fields_for_question,
 )
 from agent_core.tools.web_search import search_for_context
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -46,7 +47,7 @@ async def gather_context(state: dict[str, Any]) -> dict[str, Any]:
     user_id = state.get("user_id", "")
     session_id = state.get("session_id", "")
     messages = state.get("messages", [])
-    sse_callback = state.get("sse_callback")
+    sse_callback = get_callback_for_state(state)
 
     # Get the user's question
     user_question = None

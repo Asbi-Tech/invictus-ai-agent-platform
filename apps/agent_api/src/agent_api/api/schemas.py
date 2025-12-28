@@ -24,6 +24,7 @@ class AgentCase(str, Enum):
 
     EDIT = "edit"
     CREATE = "create"
+    FILL = "fill"
 
 
 class EditOperation(str, Enum):
@@ -86,6 +87,34 @@ class ArtifactInput(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
+class TemplateField(BaseModel):
+    """Definition of a template field to fill."""
+
+    description: str = Field(description="What this field represents")
+    instruction: str = Field(description="How to fill this field")
+    type: str = Field(
+        default="string",
+        description="Field type: string, number, boolean, object, array",
+    )
+    options: list[str] | None = Field(
+        default=None, description="Allowed values for this field (for enum-like fields)"
+    )
+    required: bool = Field(default=True, description="Whether this field is required")
+
+
+class TemplateRequest(BaseModel):
+    """Template structure for agent to follow.
+
+    Supports both flat and nested structures:
+    - Flat: {"field_name": TemplateField}
+    - Nested: {"section": {"field_name": TemplateField}}
+    """
+
+    fields: dict[str, TemplateField | dict[str, TemplateField]] = Field(
+        description="Template fields to fill, can be flat or nested"
+    )
+
+
 class UnifiedChatRequest(BaseModel):
     """Chat request supporting both ask and agent modes."""
 
@@ -140,21 +169,36 @@ class UnifiedChatRequest(BaseModel):
         default=False, description="Enable web search"
     )
 
+    # Template (for create/fill modes)
+    template: TemplateRequest | None = Field(
+        default=None,
+        description="Template structure for agent to follow (for create/fill modes)",
+    )
+
+    # Resume field (for continuing paused sessions)
+    # When session_id is provided and session is paused, this field enables resume
+    # Use 'message' field for the actual user input (clarification answers, modifications, etc.)
+    confirmation_response: str | None = Field(
+        default=None,
+        description="Resume response: 'clarified', 'approved', 'modify', or 'cancelled'",
+    )
+
 
 class ResumeRequest(BaseModel):
-    """Request to resume a paused execution with user input."""
+    """Request to resume a paused execution with user input.
+
+    Note: This is now handled through UnifiedChatRequest with session_id + confirmation_response.
+    Kept for backward compatibility documentation.
+    """
 
     session_id: str = Field(description="Session ID of the paused execution")
-    clarification_response: dict[str, Any] | None = Field(
-        default=None,
-        description="Responses to clarification questions (question_id -> response)",
+    message: str = Field(
+        default="",
+        description="User's input (clarification answers, modification requests, etc.)",
     )
     confirmation_response: str | None = Field(
         default=None,
-        description="Response to plan confirmation: 'approved', 'modify', or 'cancelled'",
-    )
-    plan_modifications: list[str] | None = Field(
-        default=None, description="Requested modifications if confirmation_response is 'modify'"
+        description="Resume response: 'clarified', 'approved', 'modify', or 'cancelled'",
     )
 
 
@@ -198,6 +242,64 @@ class ArtifactResponse(BaseModel):
     citations: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ClarificationQuestionResponse(BaseModel):
+    """A clarification question in response."""
+
+    question_id: str = Field(description="Unique question identifier")
+    question: str = Field(description="The question text")
+    options: list[str] | None = Field(default=None, description="Predefined answer options")
+    required: bool = Field(default=True, description="Whether an answer is required")
+
+
+class AgentMessageForUser(BaseModel):
+    """Human-readable message for the user.
+
+    Used in agent mode responses to provide user-facing communication
+    separate from the structured system output.
+    """
+
+    type: str = Field(
+        description="Message type: 'plan', 'summary', 'clarification', 'progress', 'error'"
+    )
+    content: str = Field(description="Human-readable message content")
+    plan_summary: dict[str, Any] | None = Field(
+        default=None,
+        description="Structured plan summary if type is 'plan'",
+    )
+    questions: list[ClarificationQuestionResponse] | None = Field(
+        default=None,
+        description="Clarification questions if type is 'clarification'",
+    )
+
+
+class AgentOutputForSystem(BaseModel):
+    """Structured output for backend system processing.
+
+    Provides machine-readable data for the backend to process,
+    separate from the user-facing message.
+    """
+
+    operation: str = Field(
+        description="Operation type: 'create', 'edit', 'fill', 'notify'"
+    )
+    artifact: ArtifactResponse | None = Field(
+        default=None,
+        description="Generated artifact (for create operation)",
+    )
+    edit_instructions: list["EditInstruction"] | None = Field(
+        default=None,
+        description="Edit instructions (for edit operation)",
+    )
+    filled_template: dict[str, Any] | None = Field(
+        default=None,
+        description="Filled template values mirroring input structure (for fill operation)",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional metadata (word count, sections count, etc.)",
+    )
 
 
 class HITLStatus(BaseModel):

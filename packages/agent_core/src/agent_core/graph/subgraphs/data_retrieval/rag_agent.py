@@ -11,6 +11,7 @@ from agent_core.tools.rag_gateway import (
     generate_fields_for_question,
 )
 from agent_core.graph.state import MultiAgentState
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -69,7 +70,7 @@ async def fetch_rag_data(state: MultiAgentState) -> dict:
         return {"rag_data": rag_data, "tool_results": tool_results}
 
     # Emit fetching event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "fetching_rag_data",
             {"message": f"Searching {len(doc_ids)} documents...", "doc_count": len(doc_ids)},
@@ -128,7 +129,7 @@ async def fetch_rag_data(state: MultiAgentState) -> dict:
         )
 
         # Emit RAG data received event
-        if sse_callback := state.get("sse_callback"):
+        if sse_callback := get_callback_for_state(state):
             await sse_callback(
                 "rag_data_received",
                 {

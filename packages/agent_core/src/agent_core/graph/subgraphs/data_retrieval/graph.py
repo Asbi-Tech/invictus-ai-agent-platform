@@ -8,6 +8,7 @@ from agent_core.graph.state import MultiAgentState
 from agent_core.graph.subgraphs.data_retrieval.mcp_agent import fetch_mcp_data
 from agent_core.graph.subgraphs.data_retrieval.rag_agent import fetch_rag_data
 from agent_core.graph.subgraphs.data_retrieval.web_agent import fetch_web_data
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -22,7 +23,7 @@ async def plan_retrieval(state: MultiAgentState) -> dict:
     logger.info("Planning data retrieval")
 
     # Emit phase started event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_started",
             {"phase": "retrieval", "message": "Gathering data from sources..."},
@@ -86,7 +87,7 @@ async def collect_results(state: MultiAgentState) -> dict:
     }
 
     # Emit phase completed event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_completed",
             {"phase": "retrieval", **data_summary},

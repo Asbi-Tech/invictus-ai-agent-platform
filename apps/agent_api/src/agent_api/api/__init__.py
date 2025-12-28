@@ -3,9 +3,12 @@
 from agent_api.api.routes import router
 from agent_api.api.schemas import (
     AgentCase,
+    AgentMessageForUser,
+    AgentOutputForSystem,
     ArtifactInput,
     ArtifactResponse,
     ChatResponse,
+    ClarificationQuestionResponse,
     DocumentSelectionRequest,
     EditInstruction,
     EditOperation,
@@ -14,6 +17,8 @@ from agent_api.api.schemas import (
     SSEEvent,
     SSEEventType,
     StorageConfigRequest,
+    TemplateField,
+    TemplateRequest,
     ToolResultResponse,
     UnifiedChatRequest,
 )
@@ -21,9 +26,12 @@ from agent_api.api.schemas import (
 __all__ = [
     "router",
     "AgentCase",
+    "AgentMessageForUser",
+    "AgentOutputForSystem",
     "ArtifactInput",
     "ArtifactResponse",
     "ChatResponse",
+    "ClarificationQuestionResponse",
     "DocumentSelectionRequest",
     "EditInstruction",
     "EditOperation",
@@ -32,6 +40,8 @@ __all__ = [
     "SSEEvent",
     "SSEEventType",
     "StorageConfigRequest",
+    "TemplateField",
+    "TemplateRequest",
     "ToolResultResponse",
     "UnifiedChatRequest",
 ]

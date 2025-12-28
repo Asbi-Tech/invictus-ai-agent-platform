@@ -5,6 +5,7 @@ from typing import Any
 
 from agent_core.tools.deals_mcp import call_deals_tool
 from agent_core.graph.state import MultiAgentState
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -22,7 +23,7 @@ async def fetch_mcp_data(state: MultiAgentState) -> dict:
     logger.info("[MCP] Starting MCP data fetch")
 
     # Emit phase started event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "fetching_mcp_data",
             {"message": "Fetching structured data from MCP..."},
@@ -58,7 +59,7 @@ async def fetch_mcp_data(state: MultiAgentState) -> dict:
                 arguments={"opportunity_id": opportunity_id, "tenant_id": tenant_id},
                 mcp_data=mcp_data,
                 tool_results=tool_results,
-                sse_callback=state.get("sse_callback"),
+                sse_callback=get_callback_for_state(state),
             )
             tool_call_count += 1
 
@@ -69,7 +70,7 @@ async def fetch_mcp_data(state: MultiAgentState) -> dict:
                     arguments={"opportunity_id": opportunity_id, "tenant_id": tenant_id},
                     mcp_data=mcp_data,
                     tool_results=tool_results,
-                    sse_callback=state.get("sse_callback"),
+                    sse_callback=get_callback_for_state(state),
                 )
                 tool_call_count += 1
 
@@ -80,7 +81,7 @@ async def fetch_mcp_data(state: MultiAgentState) -> dict:
                     arguments={"opportunity_id": opportunity_id, "tenant_id": tenant_id},
                     mcp_data=mcp_data,
                     tool_results=tool_results,
-                    sse_callback=state.get("sse_callback"),
+                    sse_callback=get_callback_for_state(state),
                 )
                 tool_call_count += 1
 
@@ -91,12 +92,12 @@ async def fetch_mcp_data(state: MultiAgentState) -> dict:
                     arguments={"opportunity_id": opportunity_id, "tenant_id": tenant_id, "limit": 10},
                     mcp_data=mcp_data,
                     tool_results=tool_results,
-                    sse_callback=state.get("sse_callback"),
+                    sse_callback=get_callback_for_state(state),
                 )
                 tool_call_count += 1
 
     # Emit MCP data received event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "mcp_data_received",
             {

@@ -7,6 +7,7 @@ from datetime import datetime
 from langchain_core.messages import HumanMessage
 from langchain_openai import AzureChatOpenAI
 
+from common.callback_registry import get_callback_for_state
 from common.config import get_settings
 from common.logging import get_logger
 from agent_core.graph.state import MultiAgentState, ClarificationQuestion
@@ -139,7 +140,7 @@ async def generate_questions(state: MultiAgentState) -> dict:
             })
 
     # Emit clarification required event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "clarification_required",
             {
@@ -171,7 +172,7 @@ async def wait_for_response(state: MultiAgentState) -> dict:
     logger.info("Waiting for user clarification response")
 
     # Emit waiting event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "thinking",
             {"message": "Waiting for your response..."},
@@ -189,71 +190,51 @@ async def wait_for_response(state: MultiAgentState) -> dict:
 
 async def process_response(state: MultiAgentState) -> dict:
     """
-    Process the user's clarification responses.
+    Process the user's clarification response.
 
     This node:
-    1. Extracts user responses from state
-    2. Updates the intent analysis with new information
-    3. Clears the clarification pending state
-    4. Prepares for planning phase
+    1. Extracts the natural language clarification from state
+    2. Stores it in working_memory for planning to use as context
+    3. Updates intent analysis to detect document type if mentioned
+    4. Clears the clarification pending state
+    5. Prepares for planning phase
     """
-    logger.info("Processing clarification responses")
+    logger.info("Processing clarification response")
 
-    responses = state.get("clarification_responses", {})
+    # Get the user's natural language clarification input
+    clarification_input = state.get("clarification_input", "")
     questions = state.get("clarification_questions", [])
     intent_analysis = state.get("intent_analysis") or {}
 
-    # Log received responses
-    for question in questions:
-        qid = question["question_id"]
-        if qid in responses:
-            logger.info(f"Question {qid}: {question['question']} -> {responses[qid]}")
+    logger.info(f"Received clarification: {clarification_input[:100]}...")
 
-    # Update intent analysis based on responses
+    # Store clarification in working_memory for planning node to use
+    working_memory = dict(state.get("working_memory", {}))
+    working_memory["clarification_context"] = clarification_input
+
+    # Update intent analysis based on clarification content
     updated_intent = dict(intent_analysis)
+    clarification_lower = clarification_input.lower()
 
-    # Check for document type in responses
-    for qid, response in responses.items():
-        response_lower = str(response).lower()
+    # Try to detect document type from clarification
+    if "memo" in clarification_lower or "investment" in clarification_lower:
+        updated_intent["document_type"] = "investment_memo"
+    elif "prescreening" in clarification_lower or "pre-screening" in clarification_lower:
+        updated_intent["document_type"] = "prescreening"
+    elif "report" in clarification_lower:
+        updated_intent["document_type"] = "custom_report"
 
-        # Try to detect document type from response
-        if "memo" in response_lower or "investment" in response_lower:
-            updated_intent["document_type"] = "investment_memo"
-        elif "prescreening" in response_lower or "pre-screening" in response_lower:
-            updated_intent["document_type"] = "prescreening"
-        elif "report" in response_lower:
-            updated_intent["document_type"] = "custom_report"
-
-    # Clear missing inputs that were addressed
-    remaining_missing = []
-    addressed_missing = set()
-
-    for missing in intent_analysis.get("missing_inputs", []):
-        # Check if any response addresses this missing input
-        addressed = False
-        for qid, response in responses.items():
-            # Find the question for this response
-            for q in questions:
-                if q["question_id"] == qid and missing.lower() in q["question"].lower():
-                    addressed = True
-                    addressed_missing.add(missing)
-                    break
-            if addressed:
-                break
-
-        if not addressed:
-            remaining_missing.append(missing)
-
-    updated_intent["missing_inputs"] = remaining_missing
-    updated_intent["clarification_needed"] = len(remaining_missing) > 0
+    # Clear missing inputs since user provided clarification
+    # The planning node will use the clarification context to fill gaps
+    updated_intent["missing_inputs"] = []
+    updated_intent["clarification_needed"] = False
 
     # Emit clarification resolved event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "clarification_resolved",
             {
-                "responses_count": len(responses),
-                "remaining_missing": remaining_missing,
+                "clarification_length": len(clarification_input),
             },
             "clarification",
         )
@@ -264,16 +245,14 @@ async def process_response(state: MultiAgentState) -> dict:
         "from_phase": "clarification",
         "to_phase": "planning",
         "timestamp": datetime.utcnow().isoformat(),
-        "reason": f"User provided {len(responses)} clarification(s)",
+        "reason": "User provided clarification",
     })
 
-    logger.info(
-        f"Clarification processed: {len(responses)} responses, "
-        f"{len(remaining_missing)} still missing"
-    )
+    logger.info("Clarification processed, moving to planning")
 
     return {
         "intent_analysis": updated_intent,
+        "working_memory": working_memory,
         "clarification_pending": False,
         "hitl_wait_reason": None,
         "phase_history": phase_history,

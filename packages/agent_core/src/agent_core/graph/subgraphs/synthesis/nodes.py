@@ -6,6 +6,7 @@ from typing import Any
 
 from langchain_openai import AzureChatOpenAI
 
+from common.callback_registry import get_callback_for_state
 from common.config import get_settings
 from common.logging import get_logger
 from agent_core.graph.state import MultiAgentState, SynthesizedInsights
@@ -81,7 +82,7 @@ async def normalize_data(state: MultiAgentState) -> dict:
     """
     logger.info("Normalizing data")
 
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "synthesis_started",
             {"message": "Analyzing and synthesizing data..."},
@@ -191,7 +192,7 @@ async def generate_insights(state: MultiAgentState) -> dict:
         }
 
         # Emit insight events
-        if sse_callback := state.get("sse_callback"):
+        if sse_callback := get_callback_for_state(state):
             for insight in insights.get("insights", [])[:3]:
                 await sse_callback(
                     "insight_generated",
@@ -249,7 +250,7 @@ async def score_confidence(state: MultiAgentState) -> dict:
     }
 
     # Emit phase completed
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "synthesis_completed",
             {

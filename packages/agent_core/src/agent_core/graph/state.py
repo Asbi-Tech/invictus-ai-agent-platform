@@ -14,7 +14,7 @@ SSECallbackType = Callable[[str, str | dict, str | None], Awaitable[None]]
 class IntentAnalysis(TypedDict, total=False):
     """Result of intent analysis."""
 
-    request_type: str  # "ask" | "create" | "edit" | "extend"
+    request_type: str  # "ask" | "create" | "edit" | "fill" | "extend"
     document_type: str | None  # "prescreening" | "investment_memo" | "custom_report" | None
     entities_detected: list[str]  # List of entity types found (opportunity, client, etc.)
     missing_inputs: list[str]  # List of required but missing inputs
@@ -167,9 +167,9 @@ class MultiAgentState(TypedDict, total=False):
     # ==========================================
     # Request Classification (enhanced)
     # ==========================================
-    request_type: str  # "ask" | "create" | "edit" | "extend"
+    request_type: str  # "ask" | "create" | "edit" | "fill" | "extend"
     document_type: str | None  # "prescreening" | "investment_memo" | "custom_report"
-    agent_case: str | None  # Deprecated, use request_type instead
+    agent_case: str | None  # "create" | "edit" | "fill"
 
     # ==========================================
     # Conversation
@@ -187,7 +187,7 @@ class MultiAgentState(TypedDict, total=False):
     # ==========================================
     clarification_pending: bool
     clarification_questions: list[ClarificationQuestion]
-    clarification_responses: dict[str, Any]  # question_id -> response
+    clarification_input: str | None  # User's natural language clarification
     hitl_wait_reason: str | None  # "clarification" | "confirmation" | None
 
     # ==========================================
@@ -195,8 +195,8 @@ class MultiAgentState(TypedDict, total=False):
     # ==========================================
     execution_plan: ExecutionPlan | None
     plan_confirmed: bool
-    plan_confirmation_response: str | None  # "approved" | "modify" | "cancelled"
-    plan_modifications_requested: list[str]
+    plan_confirmation_response: str | None  # "clarified" | "approved" | "modify" | "cancelled"
+    plan_modification_input: str | None  # User's modification request as natural text
 
     # ==========================================
     # Context (unchanged from original)
@@ -220,6 +220,18 @@ class MultiAgentState(TypedDict, total=False):
     template_strategy: str  # "use_existing" | "modify" | "generate_new"
     selected_template: dict[str, Any] | None
     template_mapping: dict[str, str]  # section_id -> data_source_key
+
+    # ==========================================
+    # Template Definition (from request)
+    # ==========================================
+    template_definition: dict[str, Any] | None  # Template structure from request
+
+    # ==========================================
+    # Fill Mode State
+    # ==========================================
+    fill_mode_active: bool  # Whether fill mode is active
+    fields_to_fill: list[str]  # List of field keys to fill
+    filled_fields: dict[str, Any]  # Accumulated filled values (mirrors template structure)
 
     # ==========================================
     # Section Writing
@@ -252,13 +264,18 @@ class MultiAgentState(TypedDict, total=False):
     # ==========================================
     # Execution Tracking
     # ==========================================
-    current_phase: str  # "intent" | "clarification" | "planning" | "confirmation" | "retrieval" | "synthesis" | "template" | "generation" | "review" | "complete"
+    current_phase: str  # "intent" | "clarification" | "planning" | "confirmation" | "retrieval" | "synthesis" | "template" | "generation" | "fill" | "review" | "complete"
     phase_history: list[PhaseTransition]
 
     # ==========================================
     # Streaming & Callbacks
     # ==========================================
     sse_callback: SSECallbackType | None
+
+    # ==========================================
+    # Summary (LLM-generated for user)
+    # ==========================================
+    summary_for_user: str | None  # Rich summary of what was done
 
     # ==========================================
     # Metadata
@@ -309,13 +326,13 @@ def create_initial_state(
         # Clarification
         "clarification_pending": False,
         "clarification_questions": [],
-        "clarification_responses": {},
+        "clarification_input": None,
         "hitl_wait_reason": None,
         # Plan
         "execution_plan": None,
         "plan_confirmed": False,
         "plan_confirmation_response": None,
-        "plan_modifications_requested": [],
+        "plan_modification_input": None,
         # Context
         "page_context": None,
         "document_ids": [],
@@ -330,6 +347,12 @@ def create_initial_state(
         "template_strategy": "generate_new",
         "selected_template": None,
         "template_mapping": {},
+        # Template Definition
+        "template_definition": None,
+        # Fill Mode
+        "fill_mode_active": False,
+        "fields_to_fill": [],
+        "filled_fields": {},
         # Sections
         "section_assignments": [],
         "sections_completed": 0,
@@ -356,6 +379,8 @@ def create_initial_state(
         "phase_history": [],
         # Streaming
         "sse_callback": None,
+        # Summary
+        "summary_for_user": None,
         # Metadata
         "created_at": now,
         "updated_at": now,

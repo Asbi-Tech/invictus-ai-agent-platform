@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -30,7 +31,7 @@ async def ingest_context(state: dict[str, Any]) -> dict[str, Any]:
     selected_docs = state.get("selected_docs", {})
     document_ids = state.get("document_ids", [])
     request_type = state.get("request_type", "ask")
-    sse_callback = state.get("sse_callback")
+    sse_callback = get_callback_for_state(state)
 
     module_id = page_context.get("module_id", "deals") if page_context else "deals"
 

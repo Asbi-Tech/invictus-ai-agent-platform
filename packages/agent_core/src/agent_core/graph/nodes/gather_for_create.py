@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Any
 
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 from agent_core.tools.deals_mcp import call_deals_tool
 from agent_core.tools.rag_gateway import extract_fields, generate_fields_for_question
@@ -33,7 +34,7 @@ async def gather_for_create(state: dict[str, Any]) -> dict[str, Any]:
     document_ids = state.get("document_ids", [])
     selected_docs = state.get("selected_docs", {})
     messages = state.get("messages", [])
-    sse_callback = state.get("sse_callback")
+    sse_callback = get_callback_for_state(state)
 
     enabled_mcps = tool_policy.get("enabled_mcps", ["deals"])
     max_tool_calls = tool_policy.get("max_tool_calls", 10)

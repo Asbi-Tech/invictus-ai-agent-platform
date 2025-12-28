@@ -11,21 +11,23 @@ from langchain_core.messages import AIMessage, HumanMessage
 from sse_starlette.sse import EventSourceResponse
 
 from agent_api.api.schemas import (
+    AgentCase,
+    AgentMessageForUser,
+    AgentOutputForSystem,
+    ArtifactResponse,
     ChatResponse,
+    EditInstruction,
+    EditOperation,
     HITLStatus,
+    RequestType,
     SSEEvent,
     SSEEventType,
     ToolResultResponse,
     UnifiedChatRequest,
-    ResumeRequest,
-    RequestType,
-    AgentCase,
-    ArtifactResponse,
-    EditInstruction,
-    EditOperation,
 )
 from agent_core.graph import compile_multi_agent_graph
 from agent_core.memory import CosmosDBCheckpointer
+from common.callback_registry import register_sse_callback
 from common.config import get_settings
 from common.logging import get_logger
 
@@ -154,6 +156,11 @@ def build_initial_state(
     """Build initial agent state from request."""
     session_id = request.session_id or str(uuid4())
 
+    # Register callback in registry for resume access
+    # (callbacks can't be serialized in checkpoints)
+    if sse_callback:
+        register_sse_callback(session_id, sse_callback)
+
     state = {
         "tenant_id": request.tenant_id,
         "user_id": request.user_id,
@@ -178,7 +185,7 @@ def build_initial_state(
         "error_count": 0,
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
-        "sse_callback": sse_callback,
+        "sse_callback": sse_callback,  # Still set for initial run (works fine)
     }
 
     # Add page context if provided
@@ -216,6 +223,18 @@ def build_initial_state(
     elif request.document_ids:
         # Backward compat: document_ids without storage (RAG won't work without storage)
         state["selected_docs"] = {"doc_ids": request.document_ids}
+
+    # Handle template for create/fill modes
+    if request.template:
+        state["template_definition"] = request.template.model_dump()
+
+    # Handle fill mode
+    if request.agent_case and request.agent_case.value == "fill":
+        state["fill_mode_active"] = True
+        # Extract field keys from template if provided
+        if request.template:
+            state["fields_to_fill"] = list(request.template.fields.keys())
+        state["filled_fields"] = {}
 
     return state
 
@@ -307,6 +326,53 @@ async def chat(request: UnifiedChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail=error_detail)
 
 
+async def get_paused_session_state(session_id: str) -> dict | None:
+    """
+    Check if a session exists and is paused, returning its state if so.
+
+    Returns the checkpoint state if session is paused, None otherwise.
+    """
+    if not session_id:
+        return None
+
+    checkpointer = get_checkpointer()
+    if not checkpointer:
+        return None
+
+    config = {"configurable": {"thread_id": session_id}}
+    try:
+        checkpoint = await checkpointer.aget(config)
+        if not checkpoint:
+            return None
+
+        state = checkpoint.get("channel_values", {})
+
+        # Check if session is paused (has an active HITL wait reason)
+        hitl_wait_reason = state.get("hitl_wait_reason")
+        if hitl_wait_reason in ["clarification", "confirmation"]:
+            return state
+
+        # Check for clarification pending (interrupt happens BEFORE clarification node)
+        # This catches the case where intent analysis completed and flagged clarification_needed
+        intent_analysis = state.get("intent_analysis") or {}
+        if state.get("clarification_pending") or intent_analysis.get("clarification_needed"):
+            # Verify we're past intent analysis
+            current_phase = state.get("current_phase", "")
+            if current_phase in ["intent", "clarification"]:
+                return state
+
+        # Also check for plan pending confirmation
+        if state.get("execution_plan") and not state.get("plan_confirmed"):
+            current_phase = state.get("current_phase", "")
+            if current_phase in ["confirmation", "awaiting_confirmation", "planning"]:
+                return state
+
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to get paused session state: {e}")
+        return None
+
+
 def check_hitl_interrupt(state: dict) -> dict | None:
     """
     Check if the graph has paused at an HITL interrupt point.
@@ -343,7 +409,7 @@ def check_hitl_interrupt(state: dict) -> dict | None:
     # BUT: Skip for "ask" requests - they should always attempt to answer directly
     request_type = state.get("intent_analysis", {}).get("request_type", "ask")
     if request_type != "ask":
-        if state.get("clarification_pending") and not state.get("clarification_responses"):
+        if state.get("clarification_pending") and not state.get("clarification_input"):
             return {
                 "interrupt_type": "clarification",
                 "questions": state.get("clarification_questions", []),
@@ -414,34 +480,55 @@ async def stream_with_hitl(
     # Check for HITL interrupt
     interrupt_info = check_hitl_interrupt(result)
     if interrupt_info:
-        # Graph paused - emit appropriate HITL event
+        # Graph paused - emit appropriate HITL event with message_for_user structure
         if interrupt_info["interrupt_type"] == "clarification":
+            questions = interrupt_info.get("questions", [])
             yield SSEEvent(
                 event_type=SSEEventType.CLARIFICATION_REQUIRED,
                 data={
                     "session_id": session_id,
-                    "questions": interrupt_info["questions"],
-                    "message": "Please provide additional information to continue.",
+                    "message_for_user": {
+                        "type": "clarification",
+                        "content": "I need some additional information to proceed. Please answer the following questions.",
+                        "questions": questions,
+                    },
+                    "questions": questions,  # Keep for backward compat
+                    "missing_inputs": interrupt_info.get("missing_inputs", []),
                 },
             ).to_sse_format()
         elif interrupt_info["interrupt_type"] == "confirmation":
+            plan = interrupt_info.get("plan", {})
+            # Build human-readable plan summary
+            sections = plan.get("sections", [])
+            section_names = [s.get("name", s.get("id", "Section")) for s in sections]
+            plan_description = f"I will create a document with {len(sections)} sections: {', '.join(section_names)}." if sections else "I have prepared an execution plan."
+
             yield SSEEvent(
                 event_type=SSEEventType.AWAITING_CONFIRMATION,
                 data={
                     "session_id": session_id,
-                    "plan": interrupt_info["plan"],
-                    "message": "Please review and approve the execution plan.",
+                    "message_for_user": {
+                        "type": "plan",
+                        "content": plan_description,
+                        "plan_summary": {
+                            "sections": section_names,
+                            "complexity": plan.get("estimated_complexity", "moderate"),
+                            "template_strategy": plan.get("template_strategy", "generate_new"),
+                        },
+                    },
+                    "plan": plan,  # Keep for backward compat
+                    "options": ["approved", "modify", "cancelled"],
                 },
             ).to_sse_format()
 
-        # Emit paused status
+        # Emit paused status (note: resume is now via /stream with session_id)
         yield SSEEvent(
             event_type=SSEEventType.STATUS,
             data={
                 "status": "paused",
                 "session_id": session_id,
                 "interrupt_type": interrupt_info["interrupt_type"],
-                "resume_endpoint": "/v1/copilot/stream/resume",
+                "resume_instructions": "Send another request to /v1/copilot/stream with the same session_id, confirmation_response ('clarified', 'approved', 'modify', or 'cancelled'), and your input in the message field.",
             },
         ).to_sse_format()
 
@@ -464,27 +551,43 @@ async def stream_with_hitl(
         ).to_sse_format()
 
     # Handle response based on request type
+    artifact_data = None
+    edit_instructions_data = None
+    filled_template_data = None
+    last_message = ""
+
     if request.type == RequestType.AGENT:
         if request.agent_case == AgentCase.CREATE:
             # Stream artifact
             artifacts = result.get("artifacts", [])
             if artifacts:
-                artifact = artifacts[-1]
+                artifact_data = artifacts[-1]
                 yield SSEEvent(
                     event_type=SSEEventType.ARTIFACT_UPDATE,
-                    data=artifact,
+                    data=artifact_data,
                 ).to_sse_format()
         elif request.agent_case == AgentCase.EDIT:
             # Stream edit instructions
-            for instruction in result.get("edit_instructions", []):
+            edit_instructions_data = result.get("edit_instructions", [])
+            for instruction in edit_instructions_data:
                 yield SSEEvent(
                     event_type=SSEEventType.EDIT_INSTRUCTION,
                     data=instruction,
                 ).to_sse_format()
+        elif request.agent_case == AgentCase.FILL:
+            # Get filled template result
+            filled_template_data = result.get("filled_fields", {})
+            # Emit a status event for fill completion
+            yield SSEEvent(
+                event_type=SSEEventType.PHASE_COMPLETED,
+                data={
+                    "phase": "fill",
+                    "fields_filled": len(filled_template_data),
+                },
+            ).to_sse_format()
     else:
         # Ask mode - stream message
         messages = result.get("messages", [])
-        last_message = ""
         for msg in reversed(messages):
             if isinstance(msg, AIMessage):
                 last_message = str(msg.content)
@@ -504,22 +607,64 @@ async def stream_with_hitl(
     for tr in result.get("tool_results", []):
         citations.extend(tr.get("citations", []))
 
-    # Emit final event
+    # Build message_for_user based on request type
+    if request.type == RequestType.AGENT:
+        # Use LLM-generated summary if available (from summary_handler subgraph)
+        summary_for_user = result.get("summary_for_user")
+        if summary_for_user:
+            message_content = summary_for_user
+        elif request.agent_case == AgentCase.CREATE:
+            artifact_title = artifact_data.get("title", "document") if artifact_data else "document"
+            message_content = f"I've created the {artifact_title}."
+        elif request.agent_case == AgentCase.EDIT:
+            instruction_count = len(edit_instructions_data) if edit_instructions_data else 0
+            message_content = f"I've prepared {instruction_count} edit instruction(s) for the document."
+        elif request.agent_case == AgentCase.FILL:
+            fields_count = len(filled_template_data) if filled_template_data else 0
+            message_content = f"I've filled {fields_count} field(s) in the template."
+        else:
+            message_content = "Request completed."
+    else:
+        message_content = last_message if last_message else "Request completed."
+
+    message_for_user = {
+        "type": "summary",
+        "content": message_content,
+    }
+
+    # Build output_for_system based on request type
+    if request.type == RequestType.AGENT:
+        operation = request.agent_case.value if request.agent_case else "notify"
+        output_for_system = {
+            "operation": operation,
+            "artifact": artifact_data,
+            "edit_instructions": edit_instructions_data,
+            "filled_template": filled_template_data,
+            "metadata": {
+                "tool_call_count": result.get("tool_call_count", 0),
+                "current_phase": result.get("current_phase", "complete"),
+            },
+        }
+    else:
+        output_for_system = {
+            "operation": "notify",
+            "artifact": None,
+            "edit_instructions": None,
+            "filled_template": None,
+            "metadata": {
+                "tool_call_count": result.get("tool_call_count", 0),
+                "message_length": len(last_message),
+            },
+        }
+
+    # Emit final event with dual response structure
     final_data = {
         "session_id": session_id,
         "type": request.type.value,
-        "tool_call_count": result.get("tool_call_count", 0),
-        "intent": result.get("current_intent"),
-        "current_phase": result.get("current_phase", "complete"),
+        "message_for_user": message_for_user,
+        "output_for_system": output_for_system,
         "citations": citations,
     }
-
-    # Add type-specific data to final event
-    if request.type == RequestType.AGENT:
-        if request.agent_case == AgentCase.CREATE:
-            final_data["artifact_count"] = len(result.get("artifacts", []))
-        elif request.agent_case == AgentCase.EDIT:
-            final_data["instruction_count"] = len(result.get("edit_instructions", []))
 
     yield SSEEvent(
         event_type=SSEEventType.FINAL,
@@ -530,16 +675,296 @@ async def stream_with_hitl(
         "Streaming request completed",
         session_id=session_id,
         request_type=request.type.value,
+        agent_case=request.agent_case.value if request.agent_case else None,
+    )
+
+
+async def stream_resume_with_hitl(
+    agent,
+    update_values: dict,
+    config: dict,
+    event_queue: Queue,
+    request,
+) -> AsyncGenerator[str, None]:
+    """
+    Resume graph execution from an interrupt point with HITL handling.
+
+    Uses LangGraph's update_state + ainvoke(None) pattern for proper resume.
+
+    Args:
+        agent: The compiled LangGraph agent
+        update_values: State values to update (user's response to HITL)
+        config: LangGraph config with thread_id
+        event_queue: Queue for SSE events from nodes
+        request: The request object (or mock) for response handling
+    """
+    session_id = config["configurable"]["thread_id"]
+
+    # Emit initial status
+    yield SSEEvent(
+        event_type=SSEEventType.STATUS,
+        data={
+            "status": "processing",
+            "session_id": session_id,
+            "type": request.type.value,
+        },
+    ).to_sse_format()
+
+    # Update the checkpoint state with user's response
+    # This is the key difference from stream_with_hitl
+    await agent.aupdate_state(config, update_values)
+
+    # Resume graph execution from where it paused (pass None as input)
+    async def run_graph():
+        return await agent.ainvoke(None, config=config)
+
+    graph_task = asyncio.create_task(run_graph())
+
+    # Stream events from queue while graph is running
+    while not graph_task.done():
+        try:
+            event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
+            yield event.to_sse_format()
+        except asyncio.TimeoutError:
+            continue
+
+    # Get final result
+    result = await graph_task
+
+    # Drain any remaining events
+    while not event_queue.empty():
+        event = event_queue.get_nowait()
+        yield event.to_sse_format()
+
+    # Check for HITL interrupt (graph may pause again)
+    interrupt_info = check_hitl_interrupt(result)
+    if interrupt_info:
+        # Graph paused again - emit appropriate HITL event
+        if interrupt_info["interrupt_type"] == "clarification":
+            questions = interrupt_info.get("questions", [])
+            yield SSEEvent(
+                event_type=SSEEventType.CLARIFICATION_REQUIRED,
+                data={
+                    "session_id": session_id,
+                    "message_for_user": {
+                        "type": "clarification",
+                        "content": "I need some additional information to proceed. Please answer the following questions.",
+                        "questions": questions,
+                    },
+                    "questions": questions,
+                    "missing_inputs": interrupt_info.get("missing_inputs", []),
+                },
+            ).to_sse_format()
+        elif interrupt_info["interrupt_type"] == "confirmation":
+            plan = interrupt_info.get("plan", {})
+            sections = plan.get("sections", [])
+            section_names = [s.get("name", s.get("id", "Section")) for s in sections]
+            plan_description = f"I will create a document with {len(sections)} sections: {', '.join(section_names)}." if sections else "I have prepared an execution plan."
+
+            yield SSEEvent(
+                event_type=SSEEventType.AWAITING_CONFIRMATION,
+                data={
+                    "session_id": session_id,
+                    "message_for_user": {
+                        "type": "plan",
+                        "content": plan_description,
+                        "plan_summary": {
+                            "sections": section_names,
+                            "complexity": plan.get("estimated_complexity", "moderate"),
+                            "template_strategy": plan.get("template_strategy", "generate_new"),
+                        },
+                    },
+                    "plan": plan,
+                    "options": ["approved", "modify", "cancelled"],
+                },
+            ).to_sse_format()
+
+        yield SSEEvent(
+            event_type=SSEEventType.STATUS,
+            data={
+                "status": "paused",
+                "session_id": session_id,
+                "interrupt_type": interrupt_info["interrupt_type"],
+                "resume_instructions": "Send another request to /v1/copilot/stream with the same session_id and appropriate response fields.",
+            },
+        ).to_sse_format()
+
+        logger.info(
+            "Graph paused for HITL (resume)",
+            session_id=session_id,
+            interrupt_type=interrupt_info["interrupt_type"],
+        )
+        return
+
+    # No interrupt - emit tool results
+    for tr in result.get("tool_results", []):
+        yield SSEEvent(
+            event_type=SSEEventType.TOOL_CALL_RESULT,
+            data={
+                "tool_name": tr.get("tool_name", ""),
+                "success": tr.get("success", False),
+                "latency_ms": tr.get("latency_ms", 0),
+            },
+        ).to_sse_format()
+
+    # Handle response based on request type
+    artifact_data = None
+    edit_instructions_data = None
+    filled_template_data = None
+    last_message = ""
+
+    if request.type == RequestType.AGENT:
+        if request.agent_case == AgentCase.CREATE:
+            artifacts = result.get("artifacts", [])
+            if artifacts:
+                artifact_data = artifacts[-1]
+                yield SSEEvent(
+                    event_type=SSEEventType.ARTIFACT_UPDATE,
+                    data=artifact_data,
+                ).to_sse_format()
+        elif request.agent_case == AgentCase.EDIT:
+            edit_instructions_data = result.get("edit_instructions", [])
+            for instruction in edit_instructions_data:
+                yield SSEEvent(
+                    event_type=SSEEventType.EDIT_INSTRUCTION,
+                    data=instruction,
+                ).to_sse_format()
+        elif request.agent_case == AgentCase.FILL:
+            filled_template_data = result.get("filled_fields", {})
+            yield SSEEvent(
+                event_type=SSEEventType.PHASE_COMPLETED,
+                data={
+                    "phase": "fill",
+                    "fields_filled": len(filled_template_data),
+                },
+            ).to_sse_format()
+    else:
+        messages = result.get("messages", [])
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage):
+                last_message = str(msg.content)
+                break
+
+        chunk_size = 50
+        for i in range(0, len(last_message), chunk_size):
+            yield SSEEvent(
+                event_type=SSEEventType.ASSISTANT_DELTA,
+                data={"content": last_message[i : i + chunk_size]},
+            ).to_sse_format()
+            await asyncio.sleep(0.02)
+
+    # Aggregate citations
+    citations = []
+    for tr in result.get("tool_results", []):
+        citations.extend(tr.get("citations", []))
+
+    # Build message_for_user and output_for_system
+    # Check if plan was cancelled - handle this case specially
+    if result.get("plan_confirmation_response") == "cancelled":
+        message_for_user = {
+            "type": "cancelled",
+            "content": "I've cancelled the plan as requested. No document was created.",
+        }
+        output_for_system = {
+            "operation": "cancelled",
+            "artifact": None,
+            "edit_instructions": None,
+            "filled_template": None,
+            "metadata": {
+                "cancelled_at_phase": result.get("current_phase", "confirmation"),
+            },
+        }
+    elif request.type == RequestType.AGENT:
+        # Use LLM-generated summary if available (from summary_handler subgraph)
+        summary_for_user = result.get("summary_for_user")
+        if summary_for_user:
+            message_content = summary_for_user
+        elif request.agent_case == AgentCase.CREATE:
+            artifact_title = artifact_data.get("title", "document") if artifact_data else "document"
+            message_content = f"I've created the {artifact_title}."
+        elif request.agent_case == AgentCase.EDIT:
+            instruction_count = len(edit_instructions_data) if edit_instructions_data else 0
+            message_content = f"I've prepared {instruction_count} edit instruction(s) for the document."
+        elif request.agent_case == AgentCase.FILL:
+            fields_count = len(filled_template_data) if filled_template_data else 0
+            message_content = f"I've filled {fields_count} field(s) in the template."
+        else:
+            message_content = "Request completed."
+
+        message_for_user = {
+            "type": "summary",
+            "content": message_content,
+        }
+
+        operation = request.agent_case.value if request.agent_case else "notify"
+        output_for_system = {
+            "operation": operation,
+            "artifact": artifact_data,
+            "edit_instructions": edit_instructions_data,
+            "filled_template": filled_template_data,
+            "metadata": {
+                "tool_call_count": result.get("tool_call_count", 0),
+                "current_phase": result.get("current_phase", "complete"),
+            },
+        }
+    else:
+        # Non-agent (ask mode) requests
+        message_for_user = {
+            "type": "summary",
+            "content": last_message if last_message else "Request completed.",
+        }
+        output_for_system = {
+            "operation": "notify",
+            "artifact": None,
+            "edit_instructions": None,
+            "filled_template": None,
+            "metadata": {
+                "tool_call_count": result.get("tool_call_count", 0),
+                "message_length": len(last_message) if last_message else 0,
+            },
+        }
+
+    # Emit final event
+    final_data = {
+        "session_id": session_id,
+        "type": request.type.value,
+        "message_for_user": message_for_user,
+        "output_for_system": output_for_system,
+        "citations": citations,
+    }
+
+    yield SSEEvent(
+        event_type=SSEEventType.FINAL,
+        data=final_data,
+    ).to_sse_format()
+
+    logger.info(
+        "Resume streaming completed",
+        session_id=session_id,
+        request_type=request.type.value,
+        agent_case=request.agent_case.value if request.agent_case else None,
     )
 
 
 @router.post("/stream")
 async def stream(request: UnifiedChatRequest) -> EventSourceResponse:
     """
-    Streaming endpoint with THINKING events, HITL support, and ask/agent mode.
+    Unified streaming endpoint for both new requests and resuming paused sessions.
+
+    This endpoint handles:
+    - New ask/agent mode requests
+    - Resuming paused HITL sessions (auto-detected when session_id has paused state)
+
+    For new requests:
+    - Starts a new graph execution
+    - May pause at clarification or confirmation HITL points
+
+    For resume (when session_id exists with paused state):
+    - Use confirmation_response with values: "clarified", "approved", "modify", or "cancelled"
+    - Put user input (clarification answers, modifications) in the 'message' field
 
     Emits:
-    - STATUS events (processing, paused)
+    - STATUS events (processing, paused, resuming)
     - THINKING events during processing
     - PHASE_STARTED/PHASE_COMPLETED events for multi-agent flow
     - CLARIFICATION_REQUIRED when user input needed
@@ -548,9 +973,7 @@ async def stream(request: UnifiedChatRequest) -> EventSourceResponse:
     - ASSISTANT_DELTA events for streaming response (ask mode)
     - ARTIFACT_UPDATE events (agent create mode)
     - EDIT_INSTRUCTION events (agent edit mode)
-    - FINAL event with complete response
-
-    If the graph pauses for HITL, use /stream/resume to continue.
+    - FINAL event with complete response including message_for_user and output_for_system
     """
 
     async def event_generator() -> AsyncGenerator[str, None]:
@@ -559,24 +982,141 @@ async def stream(request: UnifiedChatRequest) -> EventSourceResponse:
         sse_callback = create_sse_callback(event_queue)
 
         try:
-            initial_state = build_initial_state(request, sse_callback=sse_callback)
-            session_id = initial_state["session_id"]
+            # Check if this is a resume request (session_id with paused state)
+            paused_state = None
+            if request.session_id:
+                paused_state = await get_paused_session_state(request.session_id)
 
-            config = {"configurable": {"thread_id": session_id}}
+            if paused_state:
+                # ========================================
+                # RESUME PATH
+                # ========================================
+                session_id = request.session_id
+                config = {"configurable": {"thread_id": session_id}}
 
-            logger.info(
-                "Starting streaming request",
-                session_id=session_id,
-                tenant_id=request.tenant_id,
-                request_type=request.type.value,
-            )
+                logger.info(
+                    "Resuming paused execution",
+                    session_id=session_id,
+                    has_clarification=request.confirmation_response == "clarified",
+                    has_confirmation=request.confirmation_response is not None,
+                )
 
-            # Run graph with HITL handling
-            agent = get_agent()
-            async for event_str in stream_with_hitl(
-                agent, initial_state, config, event_queue, request
-            ):
-                yield event_str
+                # Register callback in registry for nodes to access on resume
+                # (callbacks can't be serialized in checkpoints, so don't include in update_state)
+                register_sse_callback(session_id, sse_callback)
+
+                # Update state with user's response (only serializable values)
+                update_state = {}
+
+                if request.confirmation_response == "clarified":
+                    # User provided clarification via message field
+                    update_state["clarification_input"] = request.message
+                    update_state["clarification_pending"] = False
+                    update_state["hitl_wait_reason"] = None
+
+                    yield SSEEvent(
+                        event_type=SSEEventType.CLARIFICATION_RESOLVED,
+                        data={
+                            "session_id": session_id,
+                            "message": request.message,
+                        },
+                    ).to_sse_format()
+
+                elif request.confirmation_response == "approved":
+                    # User approved the plan
+                    update_state["plan_confirmation_response"] = "approved"
+                    update_state["plan_confirmed"] = True
+                    update_state["hitl_wait_reason"] = None
+
+                    yield SSEEvent(
+                        event_type=SSEEventType.CONFIRMATION_RECEIVED,
+                        data={
+                            "session_id": session_id,
+                            "response": "approved",
+                        },
+                    ).to_sse_format()
+
+                elif request.confirmation_response == "modify":
+                    # User wants to modify the plan (modification details in message)
+                    update_state["plan_confirmation_response"] = "modify"
+                    update_state["plan_modification_input"] = request.message
+                    update_state["hitl_wait_reason"] = None
+
+                    yield SSEEvent(
+                        event_type=SSEEventType.CONFIRMATION_RECEIVED,
+                        data={
+                            "session_id": session_id,
+                            "response": "modify",
+                            "modifications": request.message,
+                        },
+                    ).to_sse_format()
+
+                elif request.confirmation_response == "cancelled":
+                    # User cancelled the operation
+                    update_state["plan_confirmation_response"] = "cancelled"
+                    update_state["hitl_wait_reason"] = None
+
+                    yield SSEEvent(
+                        event_type=SSEEventType.CONFIRMATION_RECEIVED,
+                        data={
+                            "session_id": session_id,
+                            "response": "cancelled",
+                        },
+                    ).to_sse_format()
+
+                # Emit resuming status
+                yield SSEEvent(
+                    event_type=SSEEventType.STATUS,
+                    data={
+                        "status": "resuming",
+                        "session_id": session_id,
+                    },
+                ).to_sse_format()
+
+                # Determine request type from current state for response handling
+                request_type_str = paused_state.get("request_type", "ask")
+                agent_case_str = paused_state.get("agent_case")
+
+                # Create a mock request for stream_resume_with_hitl
+                class MockRequest:
+                    def __init__(self, request_type: str, agent_case: str | None):
+                        self.type = RequestType(request_type) if request_type else RequestType.ASK
+                        self.agent_case = AgentCase(agent_case) if agent_case else None
+
+                mock_request = MockRequest(request_type_str, agent_case_str)
+
+                # Resume graph execution using proper LangGraph resume mechanism
+                # (update_state + ainvoke(None) instead of passing merged state)
+                agent = get_agent()
+                async for event_str in stream_resume_with_hitl(
+                    agent, update_state, config, event_queue, mock_request
+                ):
+                    yield event_str
+
+            else:
+                # ========================================
+                # NEW REQUEST PATH
+                # ========================================
+                initial_state = build_initial_state(request, sse_callback=sse_callback)
+                session_id = initial_state["session_id"]
+
+                config = {"configurable": {"thread_id": session_id}}
+
+                logger.info(
+                    "Starting streaming request",
+                    session_id=session_id,
+                    tenant_id=request.tenant_id,
+                    request_type=request.type.value,
+                    agent_case=request.agent_case.value if request.agent_case else None,
+                    has_template=request.template is not None,
+                )
+
+                # Run graph with HITL handling
+                agent = get_agent()
+                async for event_str in stream_with_hitl(
+                    agent, initial_state, config, event_queue, request
+                ):
+                    yield event_str
 
         except Exception as e:
             import traceback
@@ -590,136 +1130,8 @@ async def stream(request: UnifiedChatRequest) -> EventSourceResponse:
     return EventSourceResponse(event_generator())
 
 
-@router.post("/stream/resume")
-async def resume_stream(request: ResumeRequest) -> EventSourceResponse:
-    """
-    Resume a paused execution with user input.
 
-    Use this endpoint after receiving a CLARIFICATION_REQUIRED or
-    AWAITING_CONFIRMATION event from /stream.
-
-    For clarification:
-    - Provide clarification_response: {question_id: answer}
-
-    For confirmation:
-    - Provide confirmation_response: "approved", "modify", or "cancelled"
-    - Optionally provide plan_modifications if response is "modify"
-    """
-
-    async def event_generator() -> AsyncGenerator[str, None]:
-        # Create queue for SSE events
-        event_queue: Queue = Queue()
-        sse_callback = create_sse_callback(event_queue)
-
-        try:
-            session_id = request.session_id
-            config = {"configurable": {"thread_id": session_id}}
-
-            logger.info(
-                "Resuming paused execution",
-                session_id=session_id,
-                has_clarification=request.clarification_response is not None,
-                has_confirmation=request.confirmation_response is not None,
-            )
-
-            # Get checkpointer to retrieve current state
-            checkpointer = get_checkpointer()
-            if not checkpointer:
-                raise HTTPException(
-                    status_code=503,
-                    detail="State persistence not available. Cannot resume session.",
-                )
-
-            # Get current checkpoint state
-            checkpoint = await checkpointer.aget(config)
-            if not checkpoint:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No paused session found for session_id: {session_id}",
-                )
-
-            # Retrieve the current state from checkpoint
-            current_state = checkpoint.get("channel_values", {})
-
-            # Update state with user's response
-            update_state = {"sse_callback": sse_callback}
-
-            if request.clarification_response:
-                # User provided clarification responses
-                update_state["clarification_responses"] = request.clarification_response
-                update_state["clarification_pending"] = False
-                update_state["hitl_wait_reason"] = None
-
-                yield SSEEvent(
-                    event_type=SSEEventType.CLARIFICATION_RESOLVED,
-                    data={
-                        "session_id": session_id,
-                        "responses": request.clarification_response,
-                    },
-                ).to_sse_format()
-
-            if request.confirmation_response:
-                # User provided confirmation response
-                update_state["plan_confirmation_response"] = request.confirmation_response
-                update_state["hitl_wait_reason"] = None
-
-                if request.confirmation_response == "approved":
-                    update_state["plan_confirmed"] = True
-                elif request.confirmation_response == "modify" and request.plan_modifications:
-                    update_state["plan_modifications"] = request.plan_modifications
-
-                yield SSEEvent(
-                    event_type=SSEEventType.CONFIRMATION_RECEIVED,
-                    data={
-                        "session_id": session_id,
-                        "response": request.confirmation_response,
-                    },
-                ).to_sse_format()
-
-            # Emit resuming status
-            yield SSEEvent(
-                event_type=SSEEventType.STATUS,
-                data={
-                    "status": "resuming",
-                    "session_id": session_id,
-                },
-            ).to_sse_format()
-
-            # Resume graph execution with updated state
-            agent = get_agent()
-
-            # Merge current state with updates
-            resume_state = {**current_state, **update_state}
-
-            # Determine request type from current state for response handling
-            request_type_str = current_state.get("request_type", "ask")
-            agent_case_str = current_state.get("agent_case")
-
-            # Create a mock request for stream_with_hitl
-            class MockRequest:
-                def __init__(self, request_type: str, agent_case: str | None):
-                    self.type = RequestType(request_type) if request_type else RequestType.ASK
-                    self.agent_case = AgentCase(agent_case) if agent_case else None
-
-            mock_request = MockRequest(request_type_str, agent_case_str)
-
-            # Resume graph execution
-            async for event_str in stream_with_hitl(
-                agent, resume_state, config, event_queue, mock_request
-            ):
-                yield event_str
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            import traceback
-
-            logger.error(
-                "Resume stream error", error=str(e), traceback=traceback.format_exc()
-            )
-            yield SSEEvent(
-                event_type=SSEEventType.ERROR,
-                data={"error": str(e)},
-            ).to_sse_format()
-
-    return EventSourceResponse(event_generator())
+# NOTE: /stream/resume endpoint has been removed.
+# Resume functionality is now handled by the unified /stream endpoint.
+# When session_id is provided and the session is paused, /stream auto-detects
+# and handles the resume flow.

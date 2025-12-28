@@ -7,6 +7,7 @@ from datetime import datetime
 from langchain_core.messages import HumanMessage
 from langchain_openai import AzureChatOpenAI
 
+from common.callback_registry import get_callback_for_state
 from common.config import get_settings
 from common.logging import get_logger
 from agent_core.graph.state import (
@@ -120,20 +121,101 @@ def get_last_human_message(state: MultiAgentState) -> str:
     return ""
 
 
+def build_plan_from_template(template_definition: dict, state: MultiAgentState) -> ExecutionPlan:
+    """Build an execution plan from a template definition."""
+    fields = template_definition.get("fields", {})
+    agent_case = state.get("agent_case")
+    tool_policy = state.get("tool_policy") or {}
+
+    sections: list[SectionPlan] = []
+    data_requirements: list[DataRequirement] = []
+
+    for field_key, field_def in fields.items():
+        # Handle nested fields (dict of fields)
+        if isinstance(field_def, dict) and "description" not in field_def:
+            # This is a nested structure - each key is a subfield
+            for subfield_key, subfield_def in field_def.items():
+                if isinstance(subfield_def, dict):
+                    sections.append({
+                        "id": f"{field_key}_{subfield_key}",
+                        "name": subfield_key.replace("_", " ").title(),
+                        "description": subfield_def.get("description", ""),
+                        "data_sources": _infer_data_sources(subfield_def, tool_policy),
+                        "template_section": subfield_def.get("instruction", ""),
+                    })
+        else:
+            # Flat field
+            sections.append({
+                "id": field_key,
+                "name": field_key.replace("_", " ").title(),
+                "description": field_def.get("description", "") if isinstance(field_def, dict) else "",
+                "data_sources": _infer_data_sources(field_def, tool_policy) if isinstance(field_def, dict) else ["mcp:deals"],
+                "template_section": field_def.get("instruction", "") if isinstance(field_def, dict) else "",
+            })
+
+    # Add basic data requirement for MCP
+    if "deals" in tool_policy.get("enabled_mcps", []):
+        data_requirements.append({
+            "source": "mcp",
+            "domain": "deals",
+            "query": "get_opportunity_details",
+            "priority": 1,
+            "purpose": "Fetch opportunity context",
+        })
+
+    # Determine complexity based on field count
+    complexity = "simple" if len(sections) <= 3 else ("moderate" if len(sections) <= 6 else "complex")
+
+    return {
+        "plan_id": str(uuid.uuid4())[:8],
+        "sections": sections,
+        "data_requirements": data_requirements,
+        "tool_usage_plan": [{"tool": "deals:get_opportunity_details", "purpose": "Get opportunity data", "order": 1}],
+        "template_strategy": "use_existing",
+        "estimated_complexity": complexity,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _infer_data_sources(field_def: dict, tool_policy: dict) -> list[str]:
+    """Infer data sources based on field instruction and available tools."""
+    instruction = field_def.get("instruction", "").lower()
+    sources = []
+
+    # Check for MCP data needs
+    if any(keyword in instruction for keyword in ["extract", "opportunity", "company", "mcp", "deal"]):
+        sources.append("mcp:deals")
+
+    # Check for RAG data needs
+    if any(keyword in instruction for keyword in ["document", "rag", "file", "extract from"]):
+        sources.append("rag:documents")
+
+    # Check for web search needs
+    if any(keyword in instruction for keyword in ["search", "web", "market", "industry"]) and tool_policy.get("web_search_enabled"):
+        sources.append("web:search")
+
+    # Default to MCP if no sources inferred
+    if not sources:
+        sources.append("mcp:deals")
+
+    return sources
+
+
 async def generate_plan(state: MultiAgentState) -> dict:
     """
     Generate the execution plan for document generation.
 
     This node:
-    1. Analyzes the request and available data sources
-    2. Generates a structured section outline
-    3. Plans data requirements and tool usage
-    4. Determines template strategy
+    1. Checks for template_definition and uses it if provided
+    2. Otherwise, analyzes the request and available data sources
+    3. Generates a structured section outline
+    4. Plans data requirements and tool usage
+    5. Determines template strategy
     """
     logger.info("Generating execution plan")
 
     # Emit phase started event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_started",
             {"phase": "planning", "message": "Creating execution plan..."},
@@ -144,14 +226,49 @@ async def generate_plan(state: MultiAgentState) -> dict:
     request_type = intent_analysis.get("request_type", "ask")
     document_type = intent_analysis.get("document_type") or "custom_report"
     tool_policy = state.get("tool_policy") or {}
+    agent_case = state.get("agent_case")
+
+    # Check for template definition first
+    template_definition = state.get("template_definition")
+    if template_definition and agent_case in ["create", "fill"]:
+        logger.info("Building plan from template definition")
+        plan = build_plan_from_template(template_definition, state)
+
+        # Emit plan generated event
+        if sse_callback := get_callback_for_state(state):
+            await sse_callback(
+                "plan_generated",
+                {
+                    "plan_id": plan["plan_id"],
+                    "sections_count": len(plan["sections"]),
+                    "complexity": plan["estimated_complexity"],
+                    "sections": [{"id": s["id"], "name": s["name"]} for s in plan["sections"]],
+                    "from_template": True,
+                },
+                "planning",
+            )
+
+        return {
+            "execution_plan": plan,
+            "template_strategy": plan["template_strategy"],
+            "sections_total": len(plan["sections"]),
+        }
 
     user_message = get_last_human_message(state)
     page_context = state.get("page_context") or {}
     additional_prompt = state.get("additional_prompt") or ""
 
-    # Check for plan modification request
+    # Check for clarification context and modification input
     working_memory = state.get("working_memory") or {}
-    modification_request = working_memory.get("plan_modification_request")
+    clarification_context = working_memory.get("clarification_context", "")
+    modification_request = working_memory.get("plan_modification_request") or state.get("plan_modification_input", "")
+
+    # Build additional context from clarification and modifications
+    additional_context = ""
+    if clarification_context:
+        additional_context += f"\n\nUser clarification: {clarification_context}"
+    if modification_request:
+        additional_context += f"\n\nModification request: {modification_request}"
 
     # Calculate document count
     document_ids = state.get("document_ids", [])
@@ -160,7 +277,7 @@ async def generate_plan(state: MultiAgentState) -> dict:
 
     # Build prompt
     prompt = PLAN_GENERATION_PROMPT.format(
-        message=user_message + (f"\n\nModification request: {modification_request}" if modification_request else ""),
+        message=user_message + additional_context,
         request_type=request_type,
         document_type=document_type,
         enabled_mcps=", ".join(tool_policy.get("enabled_mcps", ["deals"])),
@@ -258,7 +375,7 @@ async def generate_plan(state: MultiAgentState) -> dict:
         }
 
     # Emit plan generated event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "plan_generated",
             {
@@ -322,7 +439,7 @@ async def validate_plan(state: MultiAgentState) -> dict:
         logger.info("Plan validation passed")
 
     # Emit phase completed event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "phase_completed",
             {

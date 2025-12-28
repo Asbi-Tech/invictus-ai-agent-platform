@@ -11,83 +11,31 @@ http://localhost:8000
 ---
 
 ## Table of Contents
-- [2. Streaming Endpoint (`/v1/copilot/stream`)](#2-streaming-endpoint-v1copilotstream)
-  - [2.1 Stream - Ask Mode](#21-stream---ask-mode)
-  - [2.2 Stream - Agent Create Mode](#22-stream---agent-create-mode)
-  - [2.3 Stream - Agent Edit Mode](#23-stream---agent-edit-mode)
-- [3. Resume Endpoint (`/v1/copilot/stream/resume`)](#3-resume-endpoint-v1copilotstreamresume)
-  - [3.1 Resume - Clarification Response](#31-resume---clarification-response)
-  - [3.2 Resume - Plan Approved](#32-resume---plan-approved)
-  - [3.3 Resume - Plan Modify](#33-resume---plan-modify)
-  - [3.4 Resume - Plan Cancelled](#34-resume---plan-cancelled)
-- [4. Error Scenarios](#4-error-scenarios)
-
----
-## 2. Streaming Endpoint (`/v1/copilot/stream`)
-
-The streaming endpoint returns Server-Sent Events (SSE). Use appropriate SSE client or cURL with streaming.
-
-### 2.1 Stream - Ask Mode
-
-```bash
-curl -X POST http://localhost:8000/v1/copilot/stream \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{
-    "tenant_id": "raoof-copilot-test-woner",
-    "user_id": "user-456",
-    "message": "What is the investment thesis for this opportunity?",
-    "type": "ask",
-    "page_context": {
-        "screen_name": "opportunity_detail",
-        "opportunity_id": "opp-001"
-    },
-    "enabled_mcps": ["deals"]
-  }'
-```
-
-**Postman Body (JSON):**
-```json
-{
-    "tenant_id": "raoof-copilot-test-woner",
-    "user_id": "user-456",
-    "message": "What is the investment thesis for this opportunity?",
-    "type": "ask",
-    "page_context": {
-        "screen_name": "opportunity_detail",
-        "opportunity_id": "opp-001"
-    },
-    "enabled_mcps": ["deals"]
-}
-```
-
-**Expected SSE Events:**
-```
-event: status
-data: {"event_type": "status", "data": {"status": "processing", "session_id": "sess-123"}}
-
-event: thinking
-data: {"event_type": "thinking", "data": {"message": "Analyzing request..."}}
-
-event: tool_call_start
-data: {"event_type": "tool_call_start", "data": {"tool_name": "get_opportunity_details"}}
-
-event: tool_call_result
-data: {"event_type": "tool_call_result", "data": {"tool_name": "get_opportunity_details", "success": true}}
-
-event: assistant_delta
-data: {"event_type": "assistant_delta", "data": {"content": "The investment thesis for..."}}
-
-event: final
-data: {"event_type": "final", "data": {"session_id": "sess-123", "type": "ask"}}
-```
+- [1. Set 1: Agent Create Mode Workflows](#1-set-1-agent-create-mode-workflows)
+  - [1.1 Agent Create Mode (Without Template)](#11-agent-create-mode-without-template)
+  - [1.2 Agent Create Mode (With Template)](#12-agent-create-mode-with-template)
+  - [1.3 Resume - Clarification Response](#13-resume---clarification-response)
+  - [1.4 Resume - Plan Approved (Confirm)](#14-resume---plan-approved-confirm)
+  - [1.5 Resume - Plan Modify](#15-resume---plan-modify)
+  - [1.6 Resume - Plan Cancelled](#16-resume---plan-cancelled)
+- [2. Set 2: Editing Existing Artifact](#2-set-2-editing-existing-artifact)
+- [3. Set 3: Fill Mode](#3-set-3-fill-mode)
+- [4. Response Structures](#4-response-structures)
+  - [4.1 HITL Events (Awaiting Confirmation)](#41-hitl-events-awaiting-confirmation)
+  - [4.2 Final Event](#42-final-event)
+- [5. Error Scenarios](#5-error-scenarios)
 
 ---
 
-### 2.2 Stream - Agent Create Mode
+## 1. Set 1: Agent Create Mode Workflows
 
-This will trigger HITL gates (clarification and confirmation).
+The unified streaming endpoint (`/v1/copilot/stream`) handles both new requests and resuming paused sessions. When a `session_id` is provided and the session is paused, it automatically resumes with the provided response.
 
+### 1.1 Agent Create Mode (Without Template)
+
+Basic create request. This will trigger HITL gates (clarification and confirmation).
+
+**cURL:**
 ```bash
 curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
@@ -104,7 +52,16 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
         "opportunity_id": "opp-001",
         "opportunity_name": "Wonder Group Inc"
     },
-    "enabled_mcps": ["deals"]
+    "enabled_mcps": ["deals"],
+    "selected_docs": {
+        "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
+        "doc_sets": ["due_diligence"],
+        "storage": {
+            "account_url": "https://stinvictusuaenorthdev.blob.core.windows.net",
+            "filesystem": "documents",
+            "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
+        }
+    }
   }'
 ```
 
@@ -122,38 +79,293 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
         "opportunity_id": "opp-001",
         "opportunity_name": "Wonder Group Inc"
     },
-    "enabled_mcps": ["deals"]
+    "enabled_mcps": ["deals"],
+    "selected_docs": {
+        "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
+        "doc_sets": ["due_diligence"],
+        "storage": {
+            "account_url": "https://stinvictusuaenorthdev.blob.core.windows.net",
+            "filesystem": "documents",
+            "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
+        }
+    }
 }
-```
-
-**Expected SSE Events (with HITL pause):**
-```
-event: status
-data: {"event_type": "status", "data": {"status": "processing", "session_id": "sess-456"}}
-
-event: phase_started
-data: {"event_type": "phase_started", "data": {"phase": "intent", "message": "Analyzing request..."}}
-
-event: intent_detected
-data: {"event_type": "intent_detected", "data": {"request_type": "create", "document_type": "investment_memo"}}
-
-event: phase_started
-data: {"event_type": "phase_started", "data": {"phase": "planning", "message": "Creating execution plan..."}}
-
-event: plan_generated
-data: {"event_type": "plan_generated", "data": {"plan_id": "plan-789", "sections": [...]}}
-
-event: awaiting_confirmation
-data: {"event_type": "awaiting_confirmation", "data": {"session_id": "sess-456", "plan": {...}, "message": "Please review and approve the execution plan."}}
-
-event: status
-data: {"event_type": "status", "data": {"status": "paused", "session_id": "sess-456", "interrupt_type": "confirmation", "resume_endpoint": "/v1/copilot/stream/resume"}}
 ```
 
 ---
 
-### 2.3 Stream - Agent Edit Mode
+### 1.2 Agent Create Mode (With Template)
 
+Create request with a template structure. The agent will follow the template fields.
+
+**cURL:**
+```bash
+curl -X POST http://localhost:8000/v1/copilot/stream \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "message": "Create an investment memo for Wonder Group",
+    "type": "agent",
+    "agent_case": "create",
+    "page_context": {
+        "module_id": "deals",
+        "screen_name": "opportunity_detail",
+        "opportunity_id": "opp-001",
+        "opportunity_name": "Wonder Group Inc"
+    },
+    "additional_prompt": "Focus on the vertical integration model and FLASH technology. This is for the investment committee meeting.",
+    "template": {
+        "fields": {
+            "executive_summary": {
+                "description": "High-level summary of the investment opportunity",
+                "instruction": "Write a 2-3 paragraph summary covering company overview, investment thesis, and key metrics",
+                "type": "string",
+                "required": true
+            },
+            "financial_analysis": {
+                "description": "Financial metrics and projections",
+                "instruction": "Include revenue, margins, growth rates, and valuation multiples. Extract from MCP data and documents.",
+                "type": "string",
+                "required": true
+            },
+            "investment_highlights": {
+                "description": "Key reasons to invest",
+                "instruction": "List 3-5 key investment highlights as bullet points",
+                "type": "string",
+                "required": true
+            },
+            "risk_factors": {
+                "description": "Key risks to consider",
+                "instruction": "Identify and describe 3-5 key risks",
+                "type": "string",
+                "required": false
+            }
+        }
+    },
+    "enabled_mcps": ["deals"],
+    "web_search_enabled": true,
+    "selected_docs": {
+        "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
+        "doc_sets": ["due_diligence", "financials"],
+        "storage": {
+            "account_url": "https://stinvictusuaenorthdev.blob.core.windows.net",
+            "filesystem": "documents",
+            "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
+        }
+    }
+  }'
+```
+
+**Postman Body (JSON):**
+```json
+{
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "message": "Create an investment memo for Wonder Group",
+    "type": "agent",
+    "agent_case": "create",
+    "page_context": {
+        "module_id": "deals",
+        "screen_name": "opportunity_detail",
+        "opportunity_id": "opp-001",
+        "opportunity_name": "Wonder Group Inc"
+    },
+    "additional_prompt": "Focus on the vertical integration model and FLASH technology. This is for the investment committee meeting.",
+    "template": {
+        "fields": {
+            "executive_summary": {
+                "description": "High-level summary of the investment opportunity",
+                "instruction": "Write a 2-3 paragraph summary covering company overview, investment thesis, and key metrics",
+                "type": "string",
+                "required": true
+            },
+            "financial_analysis": {
+                "description": "Financial metrics and projections",
+                "instruction": "Include revenue, margins, growth rates, and valuation multiples. Extract from MCP data and documents.",
+                "type": "string",
+                "required": true
+            },
+            "investment_highlights": {
+                "description": "Key reasons to invest",
+                "instruction": "List 3-5 key investment highlights as bullet points",
+                "type": "string",
+                "required": true
+            },
+            "risk_factors": {
+                "description": "Key risks to consider",
+                "instruction": "Identify and describe 3-5 key risks",
+                "type": "string",
+                "required": false
+            }
+        }
+    },
+    "enabled_mcps": ["deals"],
+    "web_search_enabled": true,
+    "selected_docs": {
+        "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
+        "doc_sets": ["due_diligence", "financials"],
+        "storage": {
+            "account_url": "https://stinvictusuaenorthdev.blob.core.windows.net",
+            "filesystem": "documents",
+            "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
+        }
+    }
+}
+```
+
+---
+
+### 1.3 Resume - Clarification Response
+
+When the system asks clarification questions (e.g., missing financial data, risk factors, market analysis), respond with your answers in the `message` field and set `confirmation_response` to `"clarified"`.
+
+**Example clarification_required event:**
+```json
+{
+  "missing_inputs": [
+    "specific financial data for Wonder Group",
+    "key risks and mitigations",
+    "market analysis details",
+    "expected returns or valuation metrics"
+  ]
+}
+```
+
+**cURL:**
+```bash
+curl -X POST http://localhost:8000/v1/copilot/stream \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "session_id": "YOUR_SESSION_ID_FROM_CLARIFICATION_EVENT",
+    "message": "Financial data: Revenue is $407M TTM with 35% YoY growth, gross margin 45%, targeting profitability by 2026. Key risks: High competition from DoorDash and Uber Eats, dependency on restaurant partnerships, regulatory risks in food service. Market analysis: TAM is $150B globally, Wonder targets premium segment with 15% market share goal. Expected returns: 3-5x in 5 years, entry valuation at $2.5B.",
+    "type": "agent",
+    "confirmation_response": "clarified"
+  }'
+```
+
+**Postman Body (JSON):**
+```json
+{
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "session_id": "YOUR_SESSION_ID_FROM_CLARIFICATION_EVENT",
+    "message": "Financial data: Revenue is $407M TTM with 35% YoY growth, gross margin 45%, targeting profitability by 2026. Key risks: High competition from DoorDash and Uber Eats, dependency on restaurant partnerships, regulatory risks in food service. Market analysis: TAM is $150B globally, Wonder targets premium segment with 15% market share goal. Expected returns: 3-5x in 5 years, entry valuation at $2.5B.",
+    "type": "agent",
+    "confirmation_response": "clarified"
+}
+```
+
+---
+
+### 1.4 Resume - Plan Approved (Confirm)
+
+Approve the execution plan to continue. This confirms the plan and proceeds with execution.
+
+**cURL:**
+```bash
+curl -X POST http://localhost:8000/v1/copilot/stream \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "session_id": "sess-456",
+    "message": "",
+    "type": "agent",
+    "confirmation_response": "approved"
+  }'
+```
+
+**Postman Body (JSON):**
+```json
+{
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "session_id": "sess-456",
+    "message": "",
+    "type": "agent",
+    "confirmation_response": "approved"
+}
+```
+
+---
+
+### 1.5 Resume - Plan Modify
+
+Request modifications to the plan before proceeding. Put your modification requests in the `message` field as natural language.
+
+**cURL:**
+```bash
+curl -X POST http://localhost:8000/v1/copilot/stream \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "session_id": "sess-456",
+    "message": "Add an ESG section after Investment Thesis. Remove the Appendix section. Focus more on competitive landscape.",
+    "type": "agent",
+    "confirmation_response": "modify"
+  }'
+```
+
+**Postman Body (JSON):**
+```json
+{
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "session_id": "sess-456",
+    "message": "Add an ESG section after Investment Thesis. Remove the Appendix section. Focus more on competitive landscape.",
+    "type": "agent",
+    "confirmation_response": "modify"
+}
+```
+
+---
+
+### 1.6 Resume - Plan Cancelled
+
+Cancel the execution entirely. This ends the session without creating the artifact.
+
+**cURL:**
+```bash
+curl -X POST http://localhost:8000/v1/copilot/stream \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "session_id": "sess-456",
+    "message": "",
+    "type": "agent",
+    "confirmation_response": "cancelled"
+  }'
+```
+
+**Postman Body (JSON):**
+```json
+{
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "session_id": "sess-456",
+    "message": "",
+    "type": "agent",
+    "confirmation_response": "cancelled"
+}
+```
+
+---
+
+## 2. Set 2: Editing Existing Artifact
+
+Edit an existing artifact. This mode allows you to modify content that has already been created.
+
+**cURL:**
 ```bash
 curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
@@ -172,7 +384,16 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
         "metadata": {}
     },
     "enabled_mcps": ["deals"],
-    "web_search_enabled": true
+    "web_search_enabled": true,
+    "selected_docs": {
+        "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
+        "doc_sets": ["due_diligence"],
+        "storage": {
+            "account_url": "https://stinvictusuaenorthdev.blob.core.windows.net",
+            "filesystem": "documents",
+            "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
+        }
+    }
   }'
 ```
 
@@ -192,30 +413,91 @@ curl -X POST http://localhost:8000/v1/copilot/stream \
         "metadata": {}
     },
     "enabled_mcps": ["deals"],
-    "web_search_enabled": true
+    "web_search_enabled": true,
+    "selected_docs": {
+        "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
+        "doc_sets": ["due_diligence"],
+        "storage": {
+            "account_url": "https://stinvictusuaenorthdev.blob.core.windows.net",
+            "filesystem": "documents",
+            "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
+        }
+    }
 }
 ```
 
 ---
 
-## 3. Resume Endpoint (`/v1/copilot/stream/resume`)
+## 3. Set 3: Fill Mode
 
-Use this endpoint after receiving a `status: paused` event from `/stream`.
+Fill mode is used for structured form filling (prescreening questionnaires, intake forms, etc.). The agent fills template fields based on available data sources.
 
-### 3.1 Resume - Clarification Response
-
-When the system asks clarification questions.
-
+**cURL:**
 ```bash
-curl -X POST http://localhost:8000/v1/copilot/stream/resume \
+curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
   -d '{
-    "session_id": "sess-456",
-    "clarification_response": {
-        "q1": "Wonder Group Inc",
-        "q2": "Focus on vertical integration model and FLASH technology",
-        "q3": "3-5 pages"
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "message": "Fill out the prescreening questionnaire for this opportunity",
+    "type": "agent",
+    "agent_case": "fill",
+    "page_context": {
+        "module_id": "deals",
+        "opportunity_id": "opp-001",
+        "opportunity_name": "Wonder Group Inc"
+    },
+    "template": {
+        "fields": {
+            "company_name": {
+                "description": "Full legal name of the company",
+                "instruction": "Extract from company documents or page context",
+                "type": "string",
+                "required": true
+            },
+            "investment_stage": {
+                "description": "Current investment stage",
+                "instruction": "Determine based on company metrics and history",
+                "type": "string",
+                "options": ["Seed", "Series A", "Series B", "Series C+", "Growth"],
+                "required": true
+            },
+            "revenue_ttm": {
+                "description": "Trailing twelve months revenue in USD",
+                "instruction": "Extract from financial documents or MCP data",
+                "type": "number",
+                "required": false
+            },
+            "employee_count": {
+                "description": "Current number of employees",
+                "instruction": "Extract from company information or documents",
+                "type": "number",
+                "required": false
+            },
+            "headquarters_location": {
+                "description": "Company headquarters city and country",
+                "instruction": "Extract from company information",
+                "type": "string",
+                "required": true
+            },
+            "key_risks": {
+                "description": "Primary risk factors identified",
+                "instruction": "Identify top 3 risks from available information",
+                "type": "array",
+                "required": false
+            }
+        }
+    },
+    "enabled_mcps": ["deals"],
+    "selected_docs": {
+        "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
+        "doc_sets": ["due_diligence", "financials"],
+        "storage": {
+            "account_url": "https://stinvictusuaenorthdev.blob.core.windows.net",
+            "filesystem": "documents",
+            "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
+        }
     }
   }'
 ```
@@ -223,188 +505,213 @@ curl -X POST http://localhost:8000/v1/copilot/stream/resume \
 **Postman Body (JSON):**
 ```json
 {
-    "session_id": "sess-456",
-    "clarification_response": {
-        "q1": "Wonder Group Inc",
-        "q2": "Focus on vertical integration model and FLASH technology",
-        "q3": "3-5 pages"
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "message": "Fill out the prescreening questionnaire for this opportunity",
+    "type": "agent",
+    "agent_case": "fill",
+    "page_context": {
+        "module_id": "deals",
+        "opportunity_id": "opp-001",
+        "opportunity_name": "Wonder Group Inc"
+    },
+    "template": {
+        "fields": {
+            "company_name": {
+                "description": "Full legal name of the company",
+                "instruction": "Extract from company documents or page context",
+                "type": "string",
+                "required": true
+            },
+            "investment_stage": {
+                "description": "Current investment stage",
+                "instruction": "Determine based on company metrics and history",
+                "type": "string",
+                "options": ["Seed", "Series A", "Series B", "Series C+", "Growth"],
+                "required": true
+            },
+            "revenue_ttm": {
+                "description": "Trailing twelve months revenue in USD",
+                "instruction": "Extract from financial documents or MCP data",
+                "type": "number",
+                "required": false
+            },
+            "employee_count": {
+                "description": "Current number of employees",
+                "instruction": "Extract from company information or documents",
+                "type": "number",
+                "required": false
+            },
+            "headquarters_location": {
+                "description": "Company headquarters city and country",
+                "instruction": "Extract from company information",
+                "type": "string",
+                "required": true
+            },
+            "key_risks": {
+                "description": "Primary risk factors identified",
+                "instruction": "Identify top 3 risks from available information",
+                "type": "array",
+                "required": false
+            }
+        }
+    },
+    "enabled_mcps": ["deals"],
+    "selected_docs": {
+        "doc_ids": ["c75e341a-2953-4672-b85b-6c9b4583b0da", "a6077903-0d41-4a16-8131-4442bf4d0046", "cd5774d3-407d-46ce-9818-0e069e705dd7", "ff6c110e-d323-47c8-a472-7bfa5f1a257a"],
+        "doc_sets": ["due_diligence", "financials"],
+        "storage": {
+            "account_url": "https://stinvictusuaenorthdev.blob.core.windows.net",
+            "filesystem": "documents",
+            "base_prefix": "tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/"
+        }
     }
 }
 ```
 
-**Expected SSE Events:**
-```
-event: clarification_resolved
-data: {"event_type": "clarification_resolved", "data": {"session_id": "sess-456", "responses": {...}}}
-
-event: status
-data: {"event_type": "status", "data": {"status": "resuming", "session_id": "sess-456"}}
-
-event: phase_started
-data: {"event_type": "phase_started", "data": {"phase": "planning"}}
-
-... (continues with normal flow)
-```
-
----
-
-### 3.2 Resume - Plan Approved
-
-Approve the execution plan to continue.
-
-```bash
-curl -X POST http://localhost:8000/v1/copilot/stream/resume \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{
-    "session_id": "sess-456",
-    "confirmation_response": "approved"
-  }'
-```
-
-**Postman Body (JSON):**
+**Expected Fill Mode Response (output_for_system.filled_template):**
 ```json
 {
-    "session_id": "sess-456",
-    "confirmation_response": "approved"
-}
-```
-
-**Expected SSE Events:**
-```
-event: confirmation_received
-data: {"event_type": "confirmation_received", "data": {"session_id": "sess-456", "response": "approved"}}
-
-event: status
-data: {"event_type": "status", "data": {"status": "resuming", "session_id": "sess-456"}}
-
-event: fetching_mcp_data
-data: {"event_type": "fetching_mcp_data", "data": {"domain": "deals"}}
-
-event: mcp_data_received
-data: {"event_type": "mcp_data_received", "data": {"domain": "deals", "data_keys": ["opportunity", "prescreening"]}}
-
-event: synthesis_started
-data: {"event_type": "synthesis_started", "data": {"message": "Synthesizing data..."}}
-
-event: template_selected
-data: {"event_type": "template_selected", "data": {"template_id": "investment_memo_v1", "section_count": 5}}
-
-event: section_started
-data: {"event_type": "section_started", "data": {"section_id": "exec_summary", "section_name": "Executive Summary"}}
-
-event: section_completed
-data: {"event_type": "section_completed", "data": {"section_id": "exec_summary", "word_count": 250}}
-
-event: review_completed
-data: {"event_type": "review_completed", "data": {"coherence_score": 0.92, "issues_count": 1, "approved": true}}
-
-event: artifact_update
-data: {"event_type": "artifact_update", "data": {"artifact_id": "art-new-001", "title": "Wonder Group Inc - Investment Memo", "content": "..."}}
-
-event: final
-data: {"event_type": "final", "data": {"session_id": "sess-456", "type": "agent", "artifact_count": 1}}
-```
-
----
-
-### 3.3 Resume - Plan Modify
-
-Request modifications to the plan before proceeding.
-
-```bash
-curl -X POST http://localhost:8000/v1/copilot/stream/resume \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{
-    "session_id": "sess-456",
-    "confirmation_response": "modify",
-    "plan_modifications": [
-        "Add an ESG section after Investment Thesis",
-        "Remove the Appendix section",
-        "Focus more on competitive landscape"
-    ]
-  }'
-```
-
-**Postman Body (JSON):**
-```json
-{
-    "session_id": "sess-456",
-    "confirmation_response": "modify",
-    "plan_modifications": [
-        "Add an ESG section after Investment Thesis",
-        "Remove the Appendix section",
-        "Focus more on competitive landscape"
+    "company_name": "Wonder Group Inc",
+    "investment_stage": "Series B",
+    "revenue_ttm": 45000000,
+    "employee_count": 250,
+    "headquarters_location": "New York, USA",
+    "key_risks": [
+        "High competition in food delivery market",
+        "Dependency on restaurant partnerships",
+        "Regulatory risks in food service industry"
     ]
 }
 ```
 
-**Expected SSE Events:**
+---
+
+## 4. Response Structures
+
+All agent responses include dual output format: `message_for_user` (human-readable) and `output_for_system` (structured JSON for backend).
+
+### 4.1 HITL Events (Awaiting Confirmation)
+
+When the agent needs user approval:
+
 ```
-event: confirmation_received
-data: {"event_type": "confirmation_received", "data": {"session_id": "sess-456", "response": "modify"}}
-
-event: status
-data: {"event_type": "status", "data": {"status": "resuming", "session_id": "sess-456"}}
-
-event: phase_started
-data: {"event_type": "phase_started", "data": {"phase": "planning", "message": "Revising plan..."}}
-
-event: plan_generated
-data: {"event_type": "plan_generated", "data": {"plan_id": "plan-790", "sections": [...]}}
-
 event: awaiting_confirmation
-data: {"event_type": "awaiting_confirmation", "data": {"session_id": "sess-456", "plan": {...}}}
+data: {
+    "event_type": "awaiting_confirmation",
+    "data": {
+        "session_id": "sess-456",
+        "message_for_user": {
+            "type": "plan",
+            "content": "I will create an Investment Memo with 4 sections: Executive Summary, Financial Analysis, Investment Highlights, and Risk Factors.",
+            "plan_summary": {
+                "sections": ["Executive Summary", "Financial Analysis", "Investment Highlights", "Risk Factors"],
+                "complexity": "moderate",
+                "template_strategy": "use_existing",
+                "from_template": true
+            }
+        },
+        "plan": {
+            "plan_id": "plan-789",
+            "sections": [...],
+            "data_sources": ["mcp:deals", "rag:documents"],
+            "tools_to_call": ["deals:get_opportunity_details"]
+        },
+        "options": ["approved", "modify", "cancelled"]
+    }
+}
 
 event: status
-data: {"event_type": "status", "data": {"status": "paused", "interrupt_type": "confirmation"}}
-```
-
----
-
-### 3.4 Resume - Plan Cancelled
-
-Cancel the execution entirely.
-
-```bash
-curl -X POST http://localhost:8000/v1/copilot/stream/resume \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{
-    "session_id": "sess-456",
-    "confirmation_response": "cancelled"
-  }'
-```
-
-**Postman Body (JSON):**
-```json
-{
-    "session_id": "sess-456",
-    "confirmation_response": "cancelled"
+data: {
+    "event_type": "status",
+    "data": {
+        "status": "paused",
+        "session_id": "sess-456",
+        "interrupt_type": "confirmation"
+    }
 }
 ```
 
-**Expected SSE Events:**
+### 4.2 Final Event
+
+Upon completion, the final event includes both message and structured output:
+
+**For Create/Edit Mode:**
 ```
-event: confirmation_received
-data: {"event_type": "confirmation_received", "data": {"session_id": "sess-456", "response": "cancelled"}}
-
-event: status
-data: {"event_type": "status", "data": {"status": "resuming", "session_id": "sess-456"}}
-
 event: final
-data: {"event_type": "final", "data": {"session_id": "sess-456", "type": "agent", "artifact_count": 0, "current_phase": "complete"}}
+data: {
+    "event_type": "final",
+    "data": {
+        "session_id": "sess-456",
+        "message_for_user": {
+            "type": "summary",
+            "content": "I've created the Investment Memo for Wonder Group Inc with 4 sections: Executive Summary, Financial Analysis, Investment Highlights, and Risk Factors."
+        },
+        "output_for_system": {
+            "operation": "create",
+            "artifact": {
+                "artifact_id": "art-001",
+                "artifact_type": "investment_memo",
+                "title": "Wonder Group Inc - Investment Memo",
+                "content": "# Wonder Group Inc - Investment Memo\n\n## Executive Summary\n..."
+            },
+            "filled_template": null,
+            "metadata": {
+                "sections_count": 4,
+                "word_count": 1250
+            }
+        },
+        "citations": [...]
+    }
+}
+```
+
+**For Fill Mode:**
+```
+event: final
+data: {
+    "event_type": "final",
+    "data": {
+        "session_id": "sess-456",
+        "message_for_user": {
+            "type": "summary",
+            "content": "I've filled 6 fields in the prescreening questionnaire. 5 of 6 required fields are complete."
+        },
+        "output_for_system": {
+            "operation": "fill",
+            "artifact": null,
+            "filled_template": {
+                "company_name": "Wonder Group Inc",
+                "investment_stage": "Series B",
+                "revenue_ttm": 45000000,
+                "employee_count": 250,
+                "headquarters_location": "New York, USA",
+                "key_risks": [
+                    "High competition in food delivery market",
+                    "Dependency on restaurant partnerships",
+                    "Regulatory risks in food service industry"
+                ]
+            },
+            "metadata": {
+                "fields_filled": 6,
+                "total_fields": 6,
+                "fill_rate": 1.0,
+                "missing_required": []
+            }
+        },
+        "citations": [...]
+    }
+}
 ```
 
 ---
 
-## 4. Error Scenarios
+## 5. Error Scenarios
 
-### 4.1 Missing Required Fields
+### 5.1 Missing Required Fields
 
 ```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
+curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
   -d '{
     "message": "Hello"
@@ -431,55 +738,31 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 
 ---
 
-### 4.2 Invalid Session ID for Resume
+### 5.2 Invalid Session ID for Resume
+
+When session doesn't exist or is not paused:
 
 ```bash
-curl -X POST http://localhost:8000/v1/copilot/stream/resume \
+curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
   -d '{
-    "session_id": "non-existent-session-id",
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "session_id": "non-existent-session",
+    "message": "",
+    "type": "agent",
     "confirmation_response": "approved"
   }'
 ```
 
-**Expected SSE Error Event:**
-```
-event: error
-data: {"event_type": "error", "data": {"error": "No paused session found for session_id: non-existent-session-id"}}
-```
+The system will treat this as a new request since no paused session is found.
 
 ---
 
-### 4.3 Invalid Confirmation Response
+### 5.3 Agent Edit Without Artifact
 
 ```bash
-curl -X POST http://localhost:8000/v1/copilot/stream/resume \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id": "sess-456",
-    "confirmation_response": "invalid_value"
-  }'
-```
-
-**Expected Response (422 Validation Error):**
-```json
-{
-    "detail": [
-        {
-            "loc": ["body", "confirmation_response"],
-            "msg": "value is not a valid enumeration member; permitted: 'approved', 'modify', 'cancelled'",
-            "type": "type_error.enum"
-        }
-    ]
-}
-```
-
----
-
-### 4.4 Agent Edit Without Artifact
-
-```bash
-curl -X POST http://localhost:8000/v1/copilot/chat \
+curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
   -d '{
     "tenant_id": "raoof-copilot-test-woner",
@@ -500,24 +783,25 @@ curl -X POST http://localhost:8000/v1/copilot/chat \
 
 ---
 
-### 4.5 State Persistence Unavailable (Resume)
-
-When Cosmos DB is not configured/available.
+### 5.4 Fill Mode Without Template
 
 ```bash
-curl -X POST http://localhost:8000/v1/copilot/stream/resume \
+curl -X POST http://localhost:8000/v1/copilot/stream \
   -H "Content-Type: application/json" \
   -d '{
-    "session_id": "sess-456",
-    "confirmation_response": "approved"
+    "tenant_id": "raoof-copilot-test-woner",
+    "user_id": "user-456",
+    "message": "Fill out the form",
+    "type": "agent",
+    "agent_case": "fill"
   }'
 ```
 
-**Expected Response (503 Service Unavailable):**
+**Expected Response (400 Bad Request):**
 ```json
 {
-    "error": "Service Unavailable",
-    "detail": "State persistence not available. Cannot resume session."
+    "error": "Bad Request",
+    "detail": "template is required for agent fill mode"
 }
 ```
 
@@ -538,22 +822,46 @@ Set these headers for all requests:
 
 Create these variables in Postman:
 
-| Variable | Example Value |
-|----------|---------------|
-| `base_url` | `http://localhost:8000` |
-| `tenant_id` | `raoof-copilot-test-woner` |
-| `user_id` | `user-456` |
-| `session_id` | `{{last_session_id}}` |
-| `opportunity_id` | `opp-001` |
+| Variable | Example Value | Description |
+|----------|---------------|-------------|
+| `base_url` | `http://localhost:8000` | API base URL |
+| `tenant_id` | `raoof-copilot-test-woner` | Your tenant ID |
+| `user_id` | `user-456` | Test user ID |
+| `session_id` | `{{last_session_id}}` | Auto-populated from response |
+| `opportunity_id` | `opp-001` | Test opportunity ID |
+| `doc_id_1` | `c75e341a-2953-4672-b85b-6c9b4583b0da` | Document ID 1 |
+| `doc_id_2` | `a6077903-0d41-4a16-8131-4442bf4d0046` | Document ID 2 |
+| `doc_id_3` | `cd5774d3-407d-46ce-9818-0e069e705dd7` | Document ID 3 |
+| `doc_id_4` | `ff6c110e-d323-47c8-a472-7bfa5f1a257a` | Document ID 4 |
+| `storage_url` | `https://stinvictusuaenorthdev.blob.core.windows.net` | Azure storage URL |
+| `storage_prefix` | `tenants/raoof-copilot-test-woner/modules/invictus-deals/use-cases/test-01/pre-screening-report/documents/` | Storage path prefix |
 
 ### Pre-request Script (Extract session_id)
 
 Add this to tests tab to capture session_id for follow-up requests:
 
 ```javascript
-// For non-streaming responses
-if (pm.response.json().session_id) {
-    pm.environment.set("last_session_id", pm.response.json().session_id);
+// Parse SSE events and extract session_id
+var responseText = pm.response.text();
+var lines = responseText.split('\n');
+
+for (var i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('data: ')) {
+        try {
+            var data = JSON.parse(lines[i].substring(6));
+            if (data.event_type === 'status' && data.data && data.data.session_id) {
+                pm.environment.set("last_session_id", data.data.session_id);
+                console.log("Session ID saved: " + data.data.session_id);
+                break;
+            }
+            if (data.event_type === 'final' && data.data && data.data.session_id) {
+                pm.environment.set("last_session_id", data.data.session_id);
+                console.log("Session ID saved: " + data.data.session_id);
+            }
+        } catch (e) {
+            // Skip invalid JSON
+        }
+    }
 }
 ```
 
@@ -564,17 +872,28 @@ if (pm.response.json().session_id) {
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/v1/copilot/chat` | POST | Non-streaming chat (ask/agent) |
-| `/v1/copilot/stream` | POST | SSE streaming with HITL support |
-| `/v1/copilot/stream/resume` | POST | Resume paused HITL execution |
+| `/v1/copilot/stream` | POST | SSE streaming with HITL support (unified endpoint) |
 
 | Request Type | `type` | `agent_case` | Use Case |
 |--------------|--------|--------------|----------|
 | Ask | `ask` | - | Q&A, queries |
 | Agent Create | `agent` | `create` | Generate new artifacts |
 | Agent Edit | `agent` | `edit` | Modify existing artifacts |
+| Agent Fill | `agent` | `fill` | Fill template fields |
 
-| Resume Response | `confirmation_response` | Effect |
-|-----------------|-------------------------|--------|
-| Approve | `approved` | Continue execution |
-| Modify | `modify` | Return to planning with changes |
-| Cancel | `cancelled` | End execution |
+| Resume Response | `confirmation_response` | `message` Contains | Effect |
+|-----------------|-------------------------|-------------------|--------|
+| Clarified | `clarified` | Answers to clarification questions | Continue to planning |
+| Approve | `approved` | (optional) Additional instructions | Continue execution |
+| Modify | `modify` | Modification requests as natural text | Return to planning with changes |
+| Cancel | `cancelled` | (optional) Reason for cancellation | End execution |
+
+### Template Field Properties
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `description` | string | Yes | What this field represents |
+| `instruction` | string | Yes | How to fill this field |
+| `type` | string | No | Field type: `string`, `number`, `boolean`, `object`, `array` |
+| `options` | array | No | Allowed values for the field |
+| `required` | boolean | No | Whether the field is required (default: true) |

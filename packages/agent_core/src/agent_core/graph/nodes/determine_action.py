@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -22,7 +23,7 @@ async def determine_action(state: dict[str, Any]) -> dict[str, Any]:
     """
     agent_case = state.get("agent_case", "create")
     current_artifact = state.get("current_artifact")
-    sse_callback = state.get("sse_callback")
+    sse_callback = get_callback_for_state(state)
 
     # Emit thinking event
     if sse_callback:

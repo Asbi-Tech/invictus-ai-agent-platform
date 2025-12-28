@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage
 
 from agent_core.tools.web_search import search_for_context
 from agent_core.graph.state import MultiAgentState
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -54,7 +55,7 @@ async def fetch_web_data(state: MultiAgentState) -> dict:
         return {"web_data": web_data, "tool_results": tool_results}
 
     # Emit fetching event
-    if sse_callback := state.get("sse_callback"):
+    if sse_callback := get_callback_for_state(state):
         await sse_callback(
             "fetching_web_data",
             {"message": "Searching the web for relevant information..."},
@@ -118,7 +119,7 @@ async def fetch_web_data(state: MultiAgentState) -> dict:
             )
 
             # Emit web data received event
-            if sse_callback := state.get("sse_callback"):
+            if sse_callback := get_callback_for_state(state):
                 await sse_callback(
                     "web_data_received",
                     {

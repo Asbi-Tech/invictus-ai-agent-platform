@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from common.callback_registry import get_callback_for_state
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -25,7 +26,7 @@ async def route_request(state: dict[str, Any]) -> dict[str, Any]:
     """
     request_type = state.get("request_type", "ask")
     agent_case = state.get("agent_case")
-    sse_callback = state.get("sse_callback")
+    sse_callback = get_callback_for_state(state)
 
     # Emit thinking event
     if sse_callback:
