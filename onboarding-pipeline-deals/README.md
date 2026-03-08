@@ -214,7 +214,7 @@ Google Drive folder
 - **OAuth tokens encrypted at rest** — Google refresh tokens are encrypted with Fernet before being stored in PostgreSQL. The `ENCRYPTION_KEY` is validated at startup.
 - **JWT authentication** — all API endpoints are protected by short-lived JWTs. The `SECRET_KEY` is validated to be ≥ 32 characters at startup via Pydantic.
 - **Rate limiting** — `slowapi` enforces 200 req/min globally and 60 req/min on document endpoints, protecting against abuse.
-- **Request body size cap** — `_BodySizeLimitMiddleware` rejects payloads over 10 MB with HTTP 413, preventing memory exhaustion attacks.
+- **Request body size cap** — `_BodySizeLimitMiddleware` rejects payloads over 40 MB with HTTP 413, preventing memory exhaustion attacks.
 - **No secrets in code** — all credentials are loaded from `.env` via `pydantic-settings`. The config class validates `ENCRYPTION_KEY` is a valid Fernet key at import time.
 
 ### Scalability

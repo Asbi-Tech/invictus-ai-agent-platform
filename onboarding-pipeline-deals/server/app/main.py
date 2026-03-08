@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
 # ── Body size limit ───────────────────────────────────────────────────────────
-_MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
+_MAX_BODY_BYTES = 40 * 1024 * 1024  # 40 MB
 
 
 class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
