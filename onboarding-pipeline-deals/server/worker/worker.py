@@ -62,7 +62,7 @@ from worker.drive_ingestion import (
     compute_checksum,
     parse_drive_created_time,
 )
-from worker.parser import extract_text, PasswordProtectedError
+from worker.parser import extract_text, extract_page_images, PasswordProtectedError
 from worker.batch_analyzer import analyze_batch, AnalysisResult
 from worker.deal_resolver import get_or_create_deal
 from worker.vectorizer import ingest_and_analyze_deal, rerun_analytical_and_fields
@@ -331,10 +331,13 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
                 logger.error(f"Skipping '{file_name}' – text extraction failed: {exc}")
                 return None
 
+            page_images = extract_page_images(content, file_name, max_pages=2)
+
             return {
                 "file_meta": file_meta,
                 "content": content,
                 "text": text,
+                "page_images": page_images,
                 "checksum": compute_checksum(content),
                 "drive_created_time": parse_drive_created_time(file_meta),
                 "folder_path": folder_path,
@@ -365,6 +368,7 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
                 "file_name": item["file_meta"]["name"],
                 "text": item["text"],
                 "folder_path": item["folder_path"],
+                "page_images": item.get("page_images", []),
             }
             for item in prepared
             if not item.get("password_protected")

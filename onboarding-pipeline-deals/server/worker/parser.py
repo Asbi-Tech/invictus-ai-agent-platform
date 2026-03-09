@@ -7,6 +7,7 @@ Supports:
   - DOCX (.docx)  via python-docx
 """
 
+import base64
 import io
 import logging
 
@@ -23,6 +24,30 @@ _OLE_MAGIC = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
 
 def _is_ole_encrypted(content: bytes) -> bool:
     return content[:8] == _OLE_MAGIC
+
+
+def extract_page_images(content: bytes, file_name: str, max_pages: int = 2) -> list[str]:
+    """
+    Render first N pages of a PDF as PNG images, returned as base64-encoded strings.
+    Returns empty list for non-PDF formats or on failure.
+    """
+    if not file_name.lower().endswith(".pdf"):
+        return []
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(stream=content, filetype="pdf")
+        images: list[str] = []
+        for page_num in range(min(doc.page_count, max_pages)):
+            page = doc[page_num]
+            pix = page.get_pixmap(dpi=150)
+            png_bytes = pix.tobytes("png")
+            images.append(base64.b64encode(png_bytes).decode("ascii"))
+        doc.close()
+        return images
+    except Exception as exc:
+        logger.warning(f"Page image extraction failed for '{file_name}': {exc}")
+        return []
 
 
 def extract_text(content: bytes, file_name: str) -> str:
