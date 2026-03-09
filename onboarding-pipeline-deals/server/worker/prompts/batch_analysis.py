@@ -8,6 +8,9 @@ doc_date, is_client, and generate two-sentence summaries.
 # ── System message sent as the "system" role to the LLM ─────────────────────
 BATCH_ANALYSIS_SYSTEM_PROMPT = (
     "You are a financial analyst assistant. "
+    "You will receive investment documents as page images and/or text excerpts, "
+    "along with file names and folder paths as metadata. "
+    "Analyze each document from its visual content (if images are provided) or text. "
     "You MUST respond with a single valid JSON object that strictly follows "
     "the output schema provided in the user message. "
     "No markdown, no code fences, no prose — raw JSON only."

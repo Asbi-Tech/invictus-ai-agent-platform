@@ -73,19 +73,20 @@ def analyze_batch(
     if not items:
         return []
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.warning("OPENAI_API_KEY not set — using fallback for all documents")
+    cfg = _cfg()
+    if not (cfg.use_azure_openai or os.getenv("OPENAI_API_KEY")):
+        logger.warning("No OpenAI credentials set — using fallback for all documents")
         return [_fallback_result(item) for item in items]
 
-    chunk_size = _cfg().LLM_CHUNK_SIZE
+    has_images = any(item.get("page_images") for item in items)
+    chunk_size = cfg.LLM_VISION_CHUNK_SIZE if has_images else cfg.LLM_CHUNK_SIZE
     chunks = [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
     # Run all chunk calls in parallel — each is an independent HTTP request
     chunk_results_map: dict[int, list[AnalysisResult]] = {}
     with ThreadPoolExecutor(max_workers=min(len(chunks), 10)) as pool:
         futures = {
-            pool.submit(_analyze_chunk, chunk, api_key, custom_prompt): idx
+            pool.submit(_analyze_chunk, chunk, custom_prompt): idx
             for idx, chunk in enumerate(chunks)
         }
         for future in as_completed(futures):
@@ -105,23 +106,49 @@ def analyze_batch(
 
 # ── Chunk processing ──────────────────────────────────────────────────────────
 
-def _analyze_chunk(chunk: list[dict], api_key: str, custom_prompt: Optional[str] = None) -> list[AnalysisResult]:
-    prompt = _build_prompt(chunk, firm_context=custom_prompt)
-    try:
-        from openai import OpenAI
+def _get_llm_client():
+    """Return the appropriate OpenAI-compatible client (Azure or direct)."""
+    cfg = _cfg()
+    if cfg.use_azure_openai:
+        from openai import AzureOpenAI
+        return AzureOpenAI(
+            api_key=cfg.AZURE_OPENAI_API_KEY,
+            azure_endpoint=cfg.AZURE_OPENAI_ENDPOINT,
+            api_version=cfg.AZURE_OPENAI_API_VERSION,
+        )
+    from openai import OpenAI
+    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        client = OpenAI(api_key=api_key)
+
+def _get_model_name() -> str:
+    """Return the model/deployment name to use in completions."""
+    cfg = _cfg()
+    if cfg.use_azure_openai:
+        return cfg.AZURE_OPENAI_DEPLOYMENT
+    return cfg.OPENAI_MODEL
+
+
+def _analyze_chunk(chunk: list[dict], custom_prompt: Optional[str] = None) -> list[AnalysisResult]:
+    has_images = any(item.get("page_images") for item in chunk)
+
+    if has_images:
+        user_content = _build_multimodal_content(chunk, firm_context=custom_prompt)
+    else:
+        user_content = _build_prompt(chunk, firm_context=custom_prompt)
+
+    try:
+        client = _get_llm_client()
         response = client.chat.completions.create(
-            model=_cfg().OPENAI_MODEL,
+            model=_get_model_name(),
             messages=[
                 {
                     "role": "system",
                     "content": BATCH_ANALYSIS_SYSTEM_PROMPT,
                 },
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": user_content},
             ],
             response_format={"type": "json_object"},
-            max_completion_tokens=400 * len(chunk),  # ~400 tokens per doc result
+            max_completion_tokens=600 * len(chunk),  # ~600 tokens per doc result (includes JSON overhead + summaries)
         )
         raw = response.choices[0].message.content or ""
         if not raw.strip():
@@ -150,12 +177,12 @@ def _build_docs_block(chunk: list[dict]) -> str:
     return "\n\n".join(sections)
 
 
-def _build_prompt(chunk: list[dict], firm_context: Optional[str] = None) -> str:
-    docs_block = _build_docs_block(chunk)
+def _build_prompt_header(firm_context: Optional[str] = None) -> str:
+    """Return the prompt text before the documents section (shared by text and vision paths)."""
     valid_types_str = " | ".join(sorted(VALID_TYPES))
     context = (firm_context or DEFAULT_FIRM_CONTEXT).strip()
 
-    prompt = f"""\
+    return f"""\
 {context}
 
 Must be exactly one of: `{valid_types_str}`
@@ -208,10 +235,6 @@ Signals → `false` (new deal / opportunity being evaluated):
 - Sentence 2: the single most important insight, metric, decision, or next step.
 - Be specific — include numbers, names, outcomes where available.
 - Do not begin with "This document".
-
-## PART 3: DOCUMENTS TO ANALYZE
-
-{docs_block}
 
 ## FEW-SHOT EXAMPLES
 
@@ -317,7 +340,52 @@ Next steps: Share data room access, follow-up call in two weeks.
 ---
 """
 
-    return prompt
+
+def _build_prompt(chunk: list[dict], firm_context: Optional[str] = None) -> str:
+    """Build a text-only prompt (used when no page images are available)."""
+    header = _build_prompt_header(firm_context=firm_context)
+    docs_block = _build_docs_block(chunk)
+    return f"{header}\n\n## PART 3: DOCUMENTS TO ANALYZE\n\n{docs_block}"
+
+
+def _build_multimodal_content(chunk: list[dict], firm_context: Optional[str] = None) -> list[dict]:
+    """Build an OpenAI content array with interleaved text headers and page images."""
+    header = _build_prompt_header(firm_context=firm_context)
+
+    content_parts: list[dict] = [
+        {"type": "text", "text": header + "\n\n## PART 3: DOCUMENTS TO ANALYZE\n"},
+    ]
+
+    text_limit = _cfg().LLM_TEXT_LIMIT
+    for item in chunk:
+        folder = item.get("folder_path", "").strip()
+        location = f" [folder: {folder}]" if folder else ""
+        doc_header = f'--- {item["custom_id"]}: {item["file_name"]}{location} ---'
+
+        images = item.get("page_images", [])
+        if images:
+            # Add document header identifying which doc the images belong to
+            content_parts.append({"type": "text", "text": doc_header})
+            # Add each page image
+            for b64_img in images:
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{b64_img}",
+                        "detail": "low",
+                    },
+                })
+            # Also include text excerpt as supplementary context
+            text = item.get("text", "").strip()
+            if text:
+                excerpt = text[:text_limit].replace("---", "- -")
+                content_parts.append({"type": "text", "text": f"[Text excerpt]: {excerpt}"})
+        else:
+            # No images — text-only fallback
+            excerpt = item["text"][:text_limit].replace("---", "- -")
+            content_parts.append({"type": "text", "text": f"{doc_header}\n{excerpt}"})
+
+    return content_parts
 
 
 def _parse_response(raw: str, chunk: list[dict]) -> list[AnalysisResult]:
