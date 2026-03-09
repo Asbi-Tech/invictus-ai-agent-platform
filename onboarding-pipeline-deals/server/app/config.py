@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # ── Worker tuning ─────────────────────────────────────────────────────────
     LLM_CHUNK_SIZE: int = 30    # docs per LLM call in batch_analyzer
-    LLM_TEXT_LIMIT: int = 1500  # chars of text sent per doc to LLM
+    LLM_TEXT_LIMIT: int = 3000  # chars of text sent per doc to LLM
     INGEST_BATCH_SIZE: int = 500  # max files per download → LLM → persist cycle
     ORG_PROCESSING_TIMEOUT_HOURS: float = 3.0  # max wall-clock hours per org per run
 
