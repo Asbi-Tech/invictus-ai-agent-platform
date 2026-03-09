@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import get_db
+from ..models.organization import Organization
 from ..models.user import User
 
 _ALGORITHM = "HS256"
@@ -84,3 +85,25 @@ def get_current_user(
             detail="User not found",
         )
     return user
+
+
+def get_current_org(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Organization:
+    """
+    FastAPI dependency that returns the authenticated user's organization.
+    Raises HTTP 403 if the user has not joined an organization yet.
+    """
+    if current_user.organization_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No organization assigned. Please create or join an organization.",
+        )
+    org = db.query(Organization).filter(Organization.id == current_user.organization_id).first()
+    if not org:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found",
+        )
+    return org

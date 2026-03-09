@@ -26,8 +26,20 @@ class UpdateProfileRequest(BaseModel):
     custom_prompt: Optional[str] = None
 
 
+class OrgBrief(BaseModel):
+    id: int
+    name: str
+    classification_limit: int
+    vectorization_limit: int
+
+    model_config = {"from_attributes": True}
+
+
 class UserResponse(UserBase):
     id: int
+    organization_id: Optional[int] = None
+    organization: Optional[OrgBrief] = None
+    needs_org: bool = False
     folder_id: Optional[str] = None
     folder_ids: Optional[list[DriveFolder]] = None
     company_name: Optional[str] = None

@@ -40,13 +40,18 @@ logger = logging.getLogger(__name__)
 def get_unprocessed_files(
     db: Session,
     user: User,
+    *,
+    organization_id: int | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Return Drive file metadata for files that are not yet in the database.
 
-    Uses two bulk DB queries (all known file IDs + checksums for the user)
+    Uses two bulk DB queries (all known file IDs + checksums for the org)
     instead of per-file lookups, reducing query count from O(N) to O(1).
     Passes shared credentials to list_files_recursive for parallel BFS.
+
+    When organization_id is provided, dedup is scoped to the org level.
+    Falls back to user-scoped dedup for backwards compatibility.
     """
     folders = user.drive_folders
     if not user.refresh_token or not folders:
@@ -88,14 +93,20 @@ def get_unprocessed_files(
         return []
 
     # ── Batch DB lookup — 2 queries regardless of how many files exist ─────────
+    # Scope dedup to org level when available, otherwise fall back to user
+    if organization_id is not None:
+        _filter = _Doc.organization_id == organization_id
+    else:
+        _filter = _Doc.user_id == user.id
+
     known_ids: set[str] = {
         row[0]
-        for row in db.query(_Doc.file_id).filter(_Doc.user_id == user.id).all()
+        for row in db.query(_Doc.file_id).filter(_filter).all()
     }
     known_checksums: set[str] = {
         row[0]
         for row in db.query(_Doc.checksum)
-        .filter(_Doc.user_id == user.id, _Doc.checksum.isnot(None))
+        .filter(_filter, _Doc.checksum.isnot(None))
         .all()
     }
 

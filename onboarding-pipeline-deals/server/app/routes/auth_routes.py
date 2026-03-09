@@ -14,7 +14,7 @@ from ..services import google_auth_service
 from ..utils.auth import create_access_token, create_refresh_token, verify_refresh_token, get_current_user
 from ..utils.encryption import encrypt
 from ..config import settings
-from ..schemas.user_schema import UserResponse, UpdateProfileRequest
+from ..schemas.user_schema import UserResponse, UpdateProfileRequest, OrgBrief
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +129,28 @@ def refresh_token(request: Request, body: RefreshRequest, db: Session = Depends(
 
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
-    """Return the current authenticated user's profile."""
-    return current_user
+    """Return the current authenticated user's profile with organization info."""
+    org_brief = None
+    if current_user.organization_id and current_user.organization:
+        org_brief = OrgBrief(
+            id=current_user.organization.id,
+            name=current_user.organization.name,
+            classification_limit=current_user.organization.classification_limit,
+            vectorization_limit=current_user.organization.vectorization_limit,
+        )
+
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        organization_id=current_user.organization_id,
+        organization=org_brief,
+        needs_org=current_user.organization_id is None,
+        folder_id=current_user.folder_id,
+        folder_ids=current_user.folder_ids,
+        company_name=current_user.company_name,
+        custom_prompt=current_user.custom_prompt,
+        created_at=current_user.created_at,
+    )
 
 
 @router.patch("/me", response_model=UserResponse)

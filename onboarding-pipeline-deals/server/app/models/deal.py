@@ -6,6 +6,7 @@ from sqlalchemy.sql import func
 from ..database import Base
 
 if TYPE_CHECKING:
+    from .organization import Organization
     from .user import User
     from .document import Document
     from .deal_field import DealField
@@ -13,9 +14,15 @@ if TYPE_CHECKING:
 
 class Deal(Base):
     __tablename__ = "deals"
-    __table_args__ = (UniqueConstraint("user_id", "name_key", name="uq_deals_user_name_key"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name_key", name="uq_deals_org_name_key"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    organization_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    # Original creator (for audit); no longer the primary scoping key
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     # Display name (title-cased, first seen)
     name: Mapped[str] = mapped_column(String, nullable=False)
@@ -34,6 +41,9 @@ class Deal(Base):
     # External pipeline job ID (Invitus AI Insights) — for debugging
     vectorizer_job_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    organization: Mapped["Organization"] = relationship(
+        "Organization", back_populates="deals"
+    )
     user: Mapped["User"] = relationship("User", back_populates="deals")
     documents: Mapped[list["Document"]] = relationship("Document", back_populates="deal")
     fields: Mapped[list["DealField"]] = relationship(

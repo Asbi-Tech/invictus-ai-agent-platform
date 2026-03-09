@@ -46,6 +46,7 @@ if os.path.exists(_env_path):
 from app.config import settings as cfg
 from app.constants import PIPELINE_TYPES as _PIPELINE_TYPES_CONST
 from app.database import SessionLocal, engine
+from app.models.organization import Organization
 from app.models.user import User
 from app.models.document import Document
 from app.models.deal import Deal
@@ -91,11 +92,11 @@ _root.addHandler(_fh)
 logger = logging.getLogger("worker")
 logger.info(f"Logging to {_log_file}")
 
-# ── Per-user run statistics ───────────────────────────────────────────────────
+# ── Per-org run statistics ────────────────────────────────────────────────────
 
 @dataclass
 class _RunStats:
-    user_id: int
+    org_id: int
     new_files_found: int = 0
     downloaded: int = 0          # successfully downloaded + extracted
     download_failed: int = 0     # download or extraction error
@@ -110,18 +111,34 @@ class _RunStats:
     docs_already_vectorized: int = 0
     dealless_skipped: int = 0
     elapsed_seconds: float = 0.0
+    timed_out: bool = False
+
+
+# ── Timeout helpers ──────────────────────────────────────────────────────────
+
+class _OrgTimeoutError(Exception):
+    """Raised when org processing exceeds its time budget."""
+    pass
+
+
+def _check_deadline(deadline: float, org_id: int, phase: str) -> None:
+    """Raise _OrgTimeoutError if the deadline has passed."""
+    if _time.monotonic() > deadline:
+        raise _OrgTimeoutError(
+            f"Org {org_id} exceeded {cfg.ORG_PROCESSING_TIMEOUT_HOURS}h timeout during {phase}"
+        )
 
 
 # ── Version management ────────────────────────────────────────────────────────
 
 def _bulk_mark_superseded(db, processed_docs: list) -> int:
     """
-    Mark older documents as superseded in bulk — one UPDATE per (user_id, doc_type, group)
+    Mark older documents as superseded in bulk — one UPDATE per (org_id, doc_type, group)
     instead of one SELECT + commit per document.
 
     Two-pass strategy:
-      Pass A (deal-scoped)   — docs with deal_id: group by (user_id, doc_type, deal_id).
-      Pass B (folder-scoped) — docs without deal_id: group by (user_id, doc_type, folder_path).
+      Pass A (deal-scoped)   — docs with deal_id: group by (org_id, doc_type, deal_id).
+      Pass B (folder-scoped) — docs without deal_id: group by (org_id, doc_type, folder_path).
 
     Both passes require doc_created_date to determine which is newer.
     """
@@ -138,19 +155,19 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
 
     total_superseded = 0
 
-    # Pass A: deal-scoped — group by (user_id, doc_type, deal_id), keep newest per group
+    # Pass A: deal-scoped — group by (org_id, doc_type, deal_id), keep newest per group
     a_groups: dict[tuple, list] = {}
     for doc in deal_docs:
-        key = (doc.user_id, doc.doc_type, doc.deal_id)
+        key = (doc.organization_id, doc.doc_type, doc.deal_id)
         a_groups.setdefault(key, []).append(doc)
 
-    for (user_id, doc_type, deal_id), docs in a_groups.items():
+    for (org_id, doc_type, deal_id), docs in a_groups.items():
         newest = max(docs, key=lambda d: d.doc_created_date)
         exclude_ids = [d.id for d in docs]
         n = (
             db.query(Document)
             .filter(
-                Document.user_id == user_id,
+                Document.organization_id == org_id,
                 Document.doc_type == doc_type,
                 Document.deal_id == deal_id,
                 Document.id.notin_(exclude_ids),
@@ -161,19 +178,19 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
         )
         total_superseded += n
 
-    # Pass B: folder-scoped — group by (user_id, doc_type, folder_path)
+    # Pass B: folder-scoped — group by (org_id, doc_type, folder_path)
     b_groups: dict[tuple, list] = {}
     for doc in folder_docs:
-        key = (doc.user_id, doc.doc_type, doc.folder_path)
+        key = (doc.organization_id, doc.doc_type, doc.folder_path)
         b_groups.setdefault(key, []).append(doc)
 
-    for (user_id, doc_type, folder_path), docs in b_groups.items():
+    for (org_id, doc_type, folder_path), docs in b_groups.items():
         newest = max(docs, key=lambda d: d.doc_created_date)
         exclude_ids = [d.id for d in docs]
         n = (
             db.query(Document)
             .filter(
-                Document.user_id == user_id,
+                Document.organization_id == org_id,
                 Document.doc_type == doc_type,
                 Document.deal_id.is_(None),
                 Document.folder_path == folder_path,
@@ -191,41 +208,78 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
     return total_superseded  # always int (0 when nothing was superseded)
 
 
-# ── Per-user pipeline ─────────────────────────────────────────────────────────
+# ── Per-org pipeline ──────────────────────────────────────────────────────────
 
-def process_user(db, user: User) -> _RunStats:
+def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
     """
-    Run the full ingestion pipeline for a single user.
+    Run the full ingestion pipeline for an organization.
+
+    Collects new files from all users' Drive folders, deduplicates at the org
+    level, then processes through LLM classification, deal assignment,
+    version management and vectorization.
 
     Files are processed in memory-bounded batches of cfg.INGEST_BATCH_SIZE to cap
-    peak RAM.  Credentials are fetched once and reused across all downloads
-    to avoid an OAuth round-trip per file.  Version management and
-    vectorization run once after all batches for a consistent final state.
+    peak RAM.  Credentials are fetched once per user and reused across all
+    downloads.  Version management and vectorization run once after all batches.
 
-    Returns a _RunStats with per-user counters for the final summary.
+    Enforces per-org classification and vectorization quotas.
+
+    Returns a _RunStats with per-org counters for the final summary.
     """
-    stats = _RunStats(user_id=user.id)
+    stats = _RunStats(org_id=org.id)
     _t0 = _time.monotonic()
-    logger.info(f"── Starting pipeline for user {user.id} ({user.email})")
+    deadline = _t0 + cfg.ORG_PROCESSING_TIMEOUT_HOURS * 3600
+    logger.info(f"── Starting pipeline for org {org.id} ({org.name!r}) with {len(users)} user(s)")
 
-    new_files = get_unprocessed_files(db, user)
-    if not new_files:
-        logger.info(f"No new files for user {user.id}")
-        stats.elapsed_seconds = _time.monotonic() - _t0
-        return stats
+    # ── Collect files from all users' Drive folders, dedup at org level ────────
+    all_new_files: list[dict] = []
+    user_credentials: dict[int, object] = {}  # user_id → Drive credentials
+    seen_file_ids: set[str] = set()
 
+    for user in users:
+        user_files = get_unprocessed_files(db, user, organization_id=org.id)
+        try:
+            creds = get_user_drive_credentials(user)
+            user_credentials[user.id] = creds
+        except Exception as exc:
+            logger.warning(f"Could not get credentials for user {user.id}: {exc}")
+            user_credentials[user.id] = None
+
+        for f in user_files:
+            if f["id"] not in seen_file_ids:
+                seen_file_ids.add(f["id"])
+                f["_user_id"] = user.id  # track which user's creds to use
+                all_new_files.append(f)
+
+    if not all_new_files:
+        logger.info(f"No new files for org {org.id}")
+    else:
+        # ── Classification quota check ─────────────────────────────────────────
+        current_classified = (
+            db.query(Document)
+            .filter(Document.organization_id == org.id, Document.status != "pending")
+            .count()
+        )
+        remaining_quota = org.classification_limit - current_classified
+        if remaining_quota <= 0:
+            logger.warning(
+                f"Org {org.id} ({org.name!r}) has reached classification limit "
+                f"({org.classification_limit}) — skipping all new files"
+            )
+            all_new_files = []
+        elif len(all_new_files) > remaining_quota:
+            logger.warning(
+                f"Org {org.id}: truncating {len(all_new_files)} new files to "
+                f"{remaining_quota} (classification limit={org.classification_limit}, "
+                f"used={current_classified})"
+            )
+            all_new_files = all_new_files[:remaining_quota]
+
+    new_files = all_new_files
     stats.new_files_found = len(new_files)
     # Accumulate summaries across batches; applied only to current-slot docs
     # after supersede step to avoid summarizing archived/skipped files.
     summary_cache: dict[str, str] = {}
-
-    # Get credentials once — shared across all download threads so the OAuth
-    # token is refreshed exactly once, not once per file.
-    try:
-        drive_credentials = get_user_drive_credentials(user)
-    except Exception as exc:
-        logger.warning(f"Could not pre-fetch drive credentials: {exc} — falling back to per-file auth")
-        drive_credentials = None
 
     # Accumulators across all batches
     all_processed_docs: list[Document] = []
@@ -233,11 +287,15 @@ def process_user(db, user: User) -> _RunStats:
     total = len(new_files)
     total_batches = (total + cfg.INGEST_BATCH_SIZE - 1) // cfg.INGEST_BATCH_SIZE
 
+    # Build a user lookup for credential resolution
+    users_by_id: dict[int, User] = {u.id: u for u in users}
+
     for batch_start in range(0, total, cfg.INGEST_BATCH_SIZE):
         batch = new_files[batch_start : batch_start + cfg.INGEST_BATCH_SIZE]
         batch_num = batch_start // cfg.INGEST_BATCH_SIZE + 1
+        _check_deadline(deadline, org.id, f"batch {batch_num}/{total_batches}")
         logger.info(
-            f"User {user.id}: batch {batch_num}/{total_batches} — {len(batch)} file(s)"
+            f"Org {org.id}: batch {batch_num}/{total_batches} — {len(batch)} file(s)"
         )
 
         # ── Step 1: Download + extract text (parallel) ───────────────────────
@@ -247,8 +305,11 @@ def process_user(db, user: User) -> _RunStats:
             file_id = file_meta["id"]
             file_name = file_meta["name"]
             folder_path = file_meta.get("folder_path", "")
+            file_user_id = file_meta.get("_user_id")
+            file_user = users_by_id.get(file_user_id, users[0]) if file_user_id else users[0]
+            file_creds = user_credentials.get(file_user.id)
 
-            content = fetch_file_content(user, file_id, credentials=drive_credentials)
+            content = fetch_file_content(file_user, file_id, credentials=file_creds)
             if content is None:
                 logger.error(f"Skipping '{file_name}' – download failed")
                 return None
@@ -308,7 +369,7 @@ def process_user(db, user: User) -> _RunStats:
             for item in prepared
             if not item.get("password_protected")
         ]
-        analysis = analyze_batch(batch_items, custom_prompt=user.custom_prompt)
+        analysis = analyze_batch(batch_items, custom_prompt=org.custom_prompt)
         heuristic_count = 0
         for result in analysis:
             llm_results[result.custom_id] = result
@@ -318,11 +379,11 @@ def process_user(db, user: User) -> _RunStats:
                 heuristic_count += 1
 
         logger.info(
-            f"User {user.id}: {len(prepared)} file(s) through LLM batch "
+            f"Org {org.id}: {len(prepared)} file(s) through LLM batch "
             f"({heuristic_count} fallback/heuristic)"
         )
         if heuristic_count == len(analysis):
-            logger.warning(f"User {user.id}: ALL results are fallback — LLM batch likely failed entirely")
+            logger.warning(f"Org {org.id}: ALL results are fallback — LLM batch likely failed entirely")
 
         # ── Reconnect DB after potentially long LLM batch ─────────────────────
         # The LLM call can take minutes; Railway's Postgres proxy may drop the
@@ -345,9 +406,9 @@ def process_user(db, user: User) -> _RunStats:
             engine.dispose()  # recycle all pooled connections
 
         # ── Step 3: Persist ───────────────────────────────────────────────────
-        # Pre-fetch all deals for this user once — reused by get_or_create_deal
+        # Pre-fetch all deals for this org once — reused by get_or_create_deal
         # to avoid a DB round-trip per document during fuzzy matching.
-        existing_deals = db.query(Deal).filter(Deal.user_id == user.id).all()
+        existing_deals = db.query(Deal).filter(Deal.organization_id == org.id).all()
 
         batch_persisted = 0
         for item in prepared:
@@ -356,11 +417,14 @@ def process_user(db, user: User) -> _RunStats:
             folder_path = item["folder_path"]
 
             # ── Password-protected: persist tombstone, infer deal from folder path ──
+            file_user_id = item["file_meta"].get("_user_id") or users[0].id
+
             if item.get("password_protected"):
                 try:
                     # Single atomic transaction: INSERT + classify in one commit
                     doc = Document(
-                        user_id=user.id,
+                        organization_id=org.id,
+                        user_id=file_user_id,
                         file_id=fid,
                         file_name=fname,
                         drive_created_time=item["drive_created_time"],
@@ -374,7 +438,9 @@ def process_user(db, user: User) -> _RunStats:
                     if folder_path:
                         hint = folder_path.split("/")[0].strip()
                         if hint:
-                            d = get_or_create_deal(db, user.id, hint, existing_deals)
+                            d = get_or_create_deal(
+                                db, org.id, hint, existing_deals, user_id=file_user_id
+                            )
                             locked_deal_id = d.id if d else None
                     doc.deal_id = locked_deal_id
                     db.add(doc)
@@ -419,12 +485,15 @@ def process_user(db, user: User) -> _RunStats:
                     final_type = doc_type
                     deal_id = None
                     if raw_deal_name:
-                        deal = get_or_create_deal(db, user.id, raw_deal_name, existing_deals)
+                        deal = get_or_create_deal(
+                            db, org.id, raw_deal_name, existing_deals, user_id=file_user_id
+                        )
                         deal_id = deal.id if deal else None
 
                 # Single atomic INSERT — create + classify in one commit
                 doc = Document(
-                    user_id=user.id,
+                    organization_id=org.id,
+                    user_id=file_user_id,
                     file_id=fid,
                     file_name=fname,
                     drive_created_time=item["drive_created_time"],
@@ -460,7 +529,7 @@ def process_user(db, user: User) -> _RunStats:
                 stats.persist_failed += 1
 
         logger.info(
-            f"User {user.id}: batch {batch_num}/{total_batches} complete "
+            f"Org {org.id}: batch {batch_num}/{total_batches} complete "
             f"({batch_persisted}/{len(prepared)} persisted, "
             f"{len(all_processed_docs)} total so far)"
         )
@@ -484,7 +553,7 @@ def process_user(db, user: User) -> _RunStats:
             db.query(Document)
             .filter(
                 Document.deal_id.in_(all_deal_ids),
-                Document.user_id == user.id,
+                Document.organization_id == org.id,
                 Document.doc_type.in_(list(_PIPELINE_TYPES_CONST) + ["meeting_minutes"]),
                 Document.status.in_(["processed", "vectorized"]),
             )
@@ -506,7 +575,7 @@ def process_user(db, user: User) -> _RunStats:
             # One UPDATE statement for all affected docs
             db.query(Document).filter(
                 Document.deal_id.in_(list(minutes_only_ids)),
-                Document.user_id == user.id,
+                Document.organization_id == org.id,
                 Document.status.in_(["processed", "vectorized"]),
             ).update(
                 {"doc_type": "client", "status": "skipped"},
@@ -518,7 +587,7 @@ def process_user(db, user: User) -> _RunStats:
             ]
             stats.retired_deals += len(minutes_only_ids)
             logger.info(
-                f"User {user.id}: retired {len(minutes_only_ids)} "
+                f"Org {org.id}: retired {len(minutes_only_ids)} "
                 f"meeting-minutes-only deal(s) — {sum(len(by_deal[i]) for i in minutes_only_ids)} doc(s) marked client/skipped"
             )
 
@@ -540,17 +609,36 @@ def process_user(db, user: User) -> _RunStats:
                 updated_count += 1
         if updated_count:
             db.commit()
-            logger.info(f"User {user.id}: set description on {updated_count} current-slot doc(s)")
+            logger.info(f"Org {org.id}: set description on {updated_count} current-slot doc(s)")
 
     # ── Step 5: Vectorize + analyze per deal (requires VECTORIZER_INGEST_URL) ────
+    _check_deadline(deadline, org.id, "pre-vectorization")
     if not cfg.VECTORIZER_INGEST_URL:
         logger.info(
-            f"User {user.id}: VECTORIZER_INGEST_URL not configured — skipping vectorization"
+            f"Org {org.id}: VECTORIZER_INGEST_URL not configured — skipping vectorization"
         )
         stats.elapsed_seconds = _time.monotonic() - _t0
         return stats
 
-    latest_docs = get_latest_documents_per_type(db, user.id)
+    # ── Vectorization quota check ──────────────────────────────────────────────
+    current_vectorized = (
+        db.query(Document)
+        .filter(
+            Document.organization_id == org.id,
+            Document.vectorizer_doc_id.isnot(None),
+        )
+        .count()
+    )
+    vec_remaining = org.vectorization_limit - current_vectorized
+    if vec_remaining <= 0:
+        logger.warning(
+            f"Org {org.id} ({org.name!r}) has reached vectorization limit "
+            f"({org.vectorization_limit}) — skipping vectorization"
+        )
+        stats.elapsed_seconds = _time.monotonic() - _t0
+        return stats
+
+    latest_docs = get_latest_documents_per_type(db, org.id)
 
     # Group by deal_id — only deal-associated documents get the full pipeline.
     # Dealless documents are skipped: without a deal they cannot receive an
@@ -568,36 +656,59 @@ def process_user(db, user: User) -> _RunStats:
         else:
             per_deal_docs.setdefault(doc.deal_id, []).append(doc)
 
+    # Enforce vectorization quota: limit number of docs sent
+    docs_to_vectorize_count = sum(len(docs) for docs in per_deal_docs.values())
+    if docs_to_vectorize_count > vec_remaining:
+        logger.warning(
+            f"Org {org.id}: truncating vectorization to {vec_remaining} docs "
+            f"(limit={org.vectorization_limit}, used={current_vectorized})"
+        )
+        # Truncate by removing deals from the end until within quota
+        truncated: dict[int, list[Document]] = {}
+        count = 0
+        for did, doc_list in per_deal_docs.items():
+            if count + len(doc_list) > vec_remaining:
+                break
+            truncated[did] = doc_list
+            count += len(doc_list)
+        per_deal_docs = truncated
+
     stats.deals_vectorized = len(per_deal_docs)
     stats.docs_already_vectorized = already_vectorized_count
     stats.dealless_skipped = dealless_count
     logger.info(
-        f"User {user.id}: {len(per_deal_docs)} deal(s) need vectorization "
+        f"Org {org.id}: {len(per_deal_docs)} deal(s) need vectorization "
         f"({already_vectorized_count} doc(s) already vectorized, "
         f"{dealless_count} dealless doc(s) skipped)"
     )
 
-    # Run all deals in parallel — each gets its own DB session via
+    # Pick a user with Drive credentials for the vectorizer (uses first available)
+    vec_user_id = users[0].id
+    for u in users:
+        if user_credentials.get(u.id) is not None:
+            vec_user_id = u.id
+            break
+
+    # Run deals sequentially — each gets its own DB session via
     # _vectorize_deal_isolated so sessions are never shared across threads.
+    # Deadline is checked before each deal to enforce per-org timeout.
     deal_tasks = sorted(
         [
-            (user.id, deal_id, [d.id for d in deal_doc_list])
+            (vec_user_id, deal_id, [d.id for d in deal_doc_list])
             for deal_id, deal_doc_list in per_deal_docs.items()
         ],
         key=lambda t: len(t[2]),
         reverse=True,
     )
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="vec") as pool:
-        futures = {
-            pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
-            for uid, did, doc_ids in deal_tasks
-        }
-        for future in as_completed(futures):
-            deal_id = futures[future]
-            exc = future.exception()
-            if exc:
+        for uid, did, doc_ids in deal_tasks:
+            _check_deadline(deadline, org.id, f"vectorization deal {did}")
+            future = pool.submit(_vectorize_deal_isolated, uid, did, doc_ids)
+            try:
+                future.result()  # block until this deal finishes
+            except Exception as exc:
                 logger.error(
-                    f"Deal {deal_id} vectorization thread raised: {exc}",
+                    f"Deal {did} vectorization thread raised: {exc}",
                     exc_info=exc,
                 )
 
@@ -607,18 +718,39 @@ def process_user(db, user: User) -> _RunStats:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def _process_user_isolated(user_id: int) -> Optional[_RunStats]:
-    """Process a single user in an isolated DB session (safe for threads)."""
+def _process_org_isolated(org_id: int) -> Optional[_RunStats]:
+    """Process a single organization in an isolated DB session (safe for threads)."""
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if user is None:
-            logger.warning(f"User {user_id} not found — skipping")
+        org = db.query(Organization).filter(Organization.id == org_id).first()
+        if org is None:
+            logger.warning(f"Org {org_id} not found — skipping")
             return None
-        return process_user(db, user)
+        # Fetch all users in this org who have Drive connected
+        org_users = (
+            db.query(User)
+            .filter(
+                User.organization_id == org_id,
+                User.refresh_token.isnot(None),
+            )
+            .all()
+        )
+        # Further filter to users with at least one configured folder
+        org_users = [u for u in org_users if u.drive_folders]
+        if not org_users:
+            logger.info(f"Org {org_id} ({org.name!r}): no users with Drive connected — skipping")
+            return None
+        return process_organization(db, org, org_users)
+    except _OrgTimeoutError as exc:
+        logger.warning(
+            f"Org {org_id} TIMED OUT after {cfg.ORG_PROCESSING_TIMEOUT_HOURS}h: {exc}"
+        )
+        stats = _RunStats(org_id=org_id, timed_out=True)
+        stats.elapsed_seconds = cfg.ORG_PROCESSING_TIMEOUT_HOURS * 3600
+        return stats
     except Exception as exc:
         logger.error(
-            f"Unhandled error for user {user_id}: {exc}",
+            f"Unhandled error for org {org_id}: {exc}",
             exc_info=True,
         )
     finally:
@@ -721,31 +853,31 @@ def _run() -> None:
     logger.info("═══ Invictus Deals Onboarding nightly worker started ═══")
     db = SessionLocal()
     try:
-        user_ids = [u.id for u in db.query(User.id).all()]
+        org_ids = [o.id for o in db.query(Organization.id).all()]
     finally:
         db.close()
 
-    if not user_ids:
-        logger.info("No users found — nothing to do")
+    if not org_ids:
+        logger.info("No organizations found — nothing to do")
         logger.info("═══ Worker run complete ═══")
         return
 
-    logger.info(f"Found {len(user_ids)} user(s) — processing in parallel (max 5 threads)")
-    max_workers = min(len(user_ids), 5)
+    logger.info(f"Found {len(org_ids)} organization(s) — processing in parallel (max 5 threads)")
+    max_workers = min(len(org_ids), 5)
 
     all_stats: list[_RunStats] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_process_user_isolated, uid): uid for uid in user_ids}
+        futures = {pool.submit(_process_org_isolated, oid): oid for oid in org_ids}
         for future in as_completed(futures):
-            uid = futures[future]
+            oid = futures[future]
             exc = future.exception()
             if exc:
-                logger.error(f"Thread for user {uid} raised: {exc}", exc_info=exc)
+                logger.error(f"Thread for org {oid} raised: {exc}", exc_info=exc)
             else:
                 result = future.result()
                 if result is not None:
                     all_stats.append(result)
-                logger.info(f"User {uid} processed successfully")
+                logger.info(f"Org {oid} processed successfully")
 
     # ── Final run summary ─────────────────────────────────────────────────────
     total_elapsed = _time.monotonic() - run_start
@@ -765,13 +897,15 @@ def _run() -> None:
         t_vec         = sum(s.deals_vectorized for s in all_stats)
         t_already_vec = sum(s.docs_already_vectorized for s in all_stats)
         t_dealless    = sum(s.dealless_skipped for s in all_stats)
+        t_timed_out   = sum(1 for s in all_stats if s.timed_out)
 
         logger.info(
             "\n"
             "╔══════════════════════════════════════════════════════╗\n"
             "║              WORKER RUN SUMMARY                     ║\n"
             "╠══════════════════════════════════════════════════════╣\n"
-            f"║  Users processed       : {len(all_stats):<27}║\n"
+            f"║  Orgs processed        : {len(all_stats):<27}║\n"
+            f"║  Orgs timed out        : {t_timed_out:<27}║\n"
             f"║  Total elapsed         : {f'{mins}m {secs}s':<27}║\n"
             "╠══════════════════════════════════════════════════════╣\n"
             f"║  New files found       : {t_found:<27}║\n"
@@ -815,18 +949,29 @@ def run_vectorizer_only() -> None:
     logger.info("═══ Vectorizer-only run started ═══")
     db = SessionLocal()
     try:
-        user_ids = [u.id for u in db.query(User.id).all()]
+        org_ids = [o.id for o in db.query(Organization.id).all()]
     finally:
         db.close()
 
-    for uid in user_ids:
+    for oid in org_ids:
         db = SessionLocal()
         try:
-            user = db.query(User).filter(User.id == uid).first()
-            if not user or not user.drive_folders:
+            org = db.query(Organization).filter(Organization.id == oid).first()
+            if not org:
                 continue
 
-            latest_docs = get_latest_documents_per_type(db, uid)
+            # Find a user with Drive credentials for this org
+            org_users = (
+                db.query(User)
+                .filter(
+                    User.organization_id == oid,
+                    User.refresh_token.isnot(None),
+                )
+                .all()
+            )
+            uid = org_users[0].id if org_users else 0
+
+            latest_docs = get_latest_documents_per_type(db, oid)
 
             # Case A: deals with at least one unvectorized doc → full Stage 1-7
             per_deal_unvec: dict[int, list[int]] = {}
@@ -871,7 +1016,7 @@ def run_vectorizer_only() -> None:
                         partial_deals.append(deal)
 
             logger.info(
-                f"User {uid}: {len(per_deal_unvec)} deal(s) need full vectorization (Case A), "
+                f"Org {oid}: {len(per_deal_unvec)} deal(s) need full vectorization (Case A), "
                 f"{len(partial_deals)} deal(s) need Stage 6/7 only (Cases B/C)"
             )
         finally:

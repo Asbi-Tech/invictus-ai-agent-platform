@@ -92,14 +92,48 @@ export interface DriveFolder {
   label: string;
 }
 
-type UserPayload = {
+export interface OrgBrief {
+  id: number;
+  name: string;
+}
+
+export type UserPayload = {
   id: number;
   email: string;
   folder_id: string | null;
   folder_ids: DriveFolder[] | null;
   company_name: string | null;
   custom_prompt: string | null;
+  organization_id: number | null;
+  organization: OrgBrief | null;
+  needs_org: boolean;
 };
+
+export interface OrgResponse {
+  id: number;
+  name: string;
+  custom_prompt: string | null;
+  classification_limit: number;
+  vectorization_limit: number;
+  created_at: string;
+}
+
+export interface OrgQuotaResponse {
+  id: number;
+  name: string;
+  classification_used: number;
+  classification_limit: number;
+  vectorization_used: number;
+  vectorization_limit: number;
+  member_count: number;
+  processing_timeout_hours: number;
+}
+
+export interface OrgListItem {
+  id: number;
+  name: string;
+  member_count: number;
+}
 
 export const api = {
   /** Redirect browser to Google OAuth */
@@ -179,5 +213,40 @@ export const api = {
     knowledge_base: number;
   }> {
     return apiFetch("/documents/stats");
+  },
+
+  // ── Organization endpoints ──────────────────────────────────────────────
+
+  createOrg(name: string): Promise<OrgResponse> {
+    return apiFetch("/org/create", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  joinOrg(orgId: number, migrateData: boolean): Promise<{ message: string }> {
+    return apiFetch("/org/join", {
+      method: "POST",
+      body: JSON.stringify({ org_id: orgId, migrate_data: migrateData }),
+    });
+  },
+
+  listOrgs(): Promise<OrgListItem[]> {
+    return apiFetch("/org/list");
+  },
+
+  getOrgQuota(): Promise<OrgQuotaResponse> {
+    return apiFetch("/org/me");
+  },
+
+  updateOrgSettings(data: {
+    custom_prompt?: string | null;
+    classification_limit?: number;
+    vectorization_limit?: number;
+  }): Promise<OrgQuotaResponse> {
+    return apiFetch("/org/settings", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
   },
 };

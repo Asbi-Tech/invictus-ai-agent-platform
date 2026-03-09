@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { toast } from "sonner";
-import { api, DriveFolder } from "@/lib/api";
+import { api, DriveFolder, OrgBrief } from "@/lib/api";
 
 interface User {
   id: number;
@@ -9,6 +9,9 @@ interface User {
   folder_ids: DriveFolder[] | null;
   company_name: string | null;
   custom_prompt: string | null;
+  organization_id: number | null;
+  organization: OrgBrief | null;
+  needs_org: boolean;
 }
 
 interface AuthContextValue {

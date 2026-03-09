@@ -1,10 +1,13 @@
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING, List
-from sqlalchemy import String, DateTime, Text
+from sqlalchemy import String, Integer, DateTime, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from ..database import Base
+
+if TYPE_CHECKING:
+    from .organization import Organization
 
 
 class User(Base):
@@ -12,11 +15,16 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    organization_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("organizations.id"), nullable=True, index=True
+    )
     refresh_token: Mapped[str | None] = mapped_column(String, nullable=True)
     folder_id: Mapped[str | None] = mapped_column(String, nullable=True)
     # List of {"id": "<drive_folder_id>", "label": "<original input>"} objects
     folder_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Deprecated: use organization.name instead
     company_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Deprecated: use organization.custom_prompt instead
     custom_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     @property
@@ -31,6 +39,9 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    organization: Mapped[Optional["Organization"]] = relationship(
+        "Organization", back_populates="users"
+    )
     documents: Mapped[list["Document"]] = relationship(  # noqa: F821
         "Document", back_populates="user"
     )

@@ -10,7 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from .config import settings
-from .routes import auth_routes, drive_routes, document_routes, sync_routes
+from .routes import auth_routes, drive_routes, document_routes, sync_routes, org_routes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +64,7 @@ app.add_middleware(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth_routes.router)
+app.include_router(org_routes.router)
 app.include_router(drive_routes.router)
 app.include_router(document_routes.router)
 app.include_router(sync_routes.router)

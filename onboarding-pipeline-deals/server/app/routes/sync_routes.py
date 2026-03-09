@@ -32,22 +32,24 @@ def sync_status(
       processing     – Documents are pending ingestion
       idle           – Everything is up to date
     """
-    total = db.query(Document).filter(Document.user_id == current_user.id).count()
+    org_id = current_user.organization_id
+
+    total = db.query(Document).filter(Document.organization_id == org_id).count() if org_id else 0
 
     processed = (
         db.query(Document)
         .filter(
-            Document.user_id == current_user.id,
+            Document.organization_id == org_id,
             Document.status.in_(["processed", "vectorized"]),
         )
         .count()
-    )
+    ) if org_id else 0
 
     pending = (
         db.query(Document)
-        .filter(Document.user_id == current_user.id, Document.status == "pending")
+        .filter(Document.organization_id == org_id, Document.status == "pending")
         .count()
-    )
+    ) if org_id else 0
 
     drive_connected = current_user.refresh_token is not None
     folder_configured = current_user.folder_id is not None
