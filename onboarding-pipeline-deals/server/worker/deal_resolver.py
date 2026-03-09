@@ -145,7 +145,7 @@ def get_or_create_deal(
     raw_name: str,
     existing_deals: list | None = None,
     *,
-    user_id: int | None = None,
+    user_id: int,
 ):
     """
     Look up a Deal by normalized key for this organization; create it if not found.
@@ -191,7 +191,7 @@ def get_or_create_deal(
     try:
         deal = Deal(
             organization_id=organization_id,
-            user_id=user_id or 0,
+            user_id=user_id,
             name=display_name,
             name_key=key,
         )

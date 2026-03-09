@@ -118,7 +118,7 @@ def join_org(
 
     # Migrate data if requested and user has an existing org
     if body.migrate_data and old_org_id is not None:
-        _migrate_data(db, old_org_id, org.id)
+        _migrate_data(db, old_org_id, org.id, current_user.id)
 
     current_user.organization_id = org.id
     current_user.company_name = org.name
@@ -132,8 +132,8 @@ def join_org(
     return OrgResponse.model_validate(org)
 
 
-def _migrate_data(db: Session, from_org_id: int, to_org_id: int) -> None:
-    """Move documents and deals from one org to another, handling dedup."""
+def _migrate_data(db: Session, from_org_id: int, to_org_id: int, user_id: int) -> None:
+    """Move user's documents and deals from one org to another, handling dedup."""
     # Get file_ids already in the target org to avoid unique constraint violations
     existing_file_ids = {
         row[0]
@@ -142,11 +142,12 @@ def _migrate_data(db: Session, from_org_id: int, to_org_id: int) -> None:
         .all()
     }
 
-    # Move non-conflicting documents
+    # Move non-conflicting documents belonging to this user
     docs_to_move = (
         db.query(Document)
         .filter(
             Document.organization_id == from_org_id,
+            Document.user_id == user_id,
             Document.file_id.notin_(existing_file_ids) if existing_file_ids else True,
         )
         .all()
@@ -167,6 +168,7 @@ def _migrate_data(db: Session, from_org_id: int, to_org_id: int) -> None:
         db.query(Deal)
         .filter(
             Deal.organization_id == from_org_id,
+            Deal.user_id == user_id,
             Deal.name_key.in_(existing_deal_keys) if existing_deal_keys else False,
         )
         .all()
@@ -184,9 +186,10 @@ def _migrate_data(db: Session, from_org_id: int, to_org_id: int) -> None:
                 Document.organization_id == to_org_id,
             ).update({"deal_id": target_deal.id}, synchronize_session="fetch")
 
-    # Move remaining deals (no name conflict)
+    # Move remaining deals belonging to this user (no name conflict)
     db.query(Deal).filter(
         Deal.organization_id == from_org_id,
+        Deal.user_id == user_id,
         Deal.name_key.notin_(existing_deal_keys) if existing_deal_keys else True,
     ).update({"organization_id": to_org_id}, synchronize_session="fetch")
 
