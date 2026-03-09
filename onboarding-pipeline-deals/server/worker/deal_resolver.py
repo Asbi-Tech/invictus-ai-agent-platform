@@ -141,17 +141,21 @@ def _fuzzy_find_deal(existing_deals: list, key: str, raw_name: str):
 
 def get_or_create_deal(
     db: Session,
-    user_id: int,
+    organization_id: int,
     raw_name: str,
     existing_deals: list | None = None,
+    *,
+    user_id: int | None = None,
 ):
     """
-    Look up a Deal by normalized key for this user; create it if not found.
+    Look up a Deal by normalized key for this organization; create it if not found.
     Returns the Deal ORM object.
 
-    Pass `existing_deals` (pre-fetched list of Deal ORM objects for this user)
+    Pass `existing_deals` (pre-fetched list of Deal ORM objects for this org)
     to avoid a repeated DB scan on every call.  When omitted, falls back to
     querying the DB — preserves backwards compatibility.
+
+    `user_id` is stored on new deals for audit (who originally created it).
 
     Deduplication: "Acme Corp", "ACME INC", and "acme" all produce key "acme"
     and resolve to the same Deal row.
@@ -170,7 +174,7 @@ def get_or_create_deal(
     else:
         deal = (
             db.query(Deal)
-            .filter(Deal.user_id == user_id, Deal.name_key == key)
+            .filter(Deal.organization_id == organization_id, Deal.name_key == key)
             .first()
         )
     if deal:
@@ -178,27 +182,34 @@ def get_or_create_deal(
 
     # ── Fuzzy pass: catch near-duplicates before creating a new row ──────────
     deals_for_fuzzy = existing_deals if existing_deals is not None else (
-        db.query(Deal).filter(Deal.user_id == user_id).all()
+        db.query(Deal).filter(Deal.organization_id == organization_id).all()
     )
     fuzzy_match = _fuzzy_find_deal(deals_for_fuzzy, key, raw_name)
     if fuzzy_match:
         return fuzzy_match
 
     try:
-        deal = Deal(user_id=user_id, name=display_name, name_key=key)
+        deal = Deal(
+            organization_id=organization_id,
+            user_id=user_id or 0,
+            name=display_name,
+            name_key=key,
+        )
         db.add(deal)
         db.commit()
         db.refresh(deal)
         # Add to the caller's cache so subsequent lookups see this new deal
         if existing_deals is not None:
             existing_deals.append(deal)
-        logger.info(f"Created new deal: '{display_name}' (key='{key}') for user {user_id}")
+        logger.info(
+            f"Created new deal: '{display_name}' (key='{key}') for org {organization_id}"
+        )
         return deal
     except IntegrityError:
         # Another concurrent insert beat us — roll back and fetch the winner
         db.rollback()
         return (
             db.query(Deal)
-            .filter(Deal.user_id == user_id, Deal.name_key == key)
+            .filter(Deal.organization_id == organization_id, Deal.name_key == key)
             .first()
         )

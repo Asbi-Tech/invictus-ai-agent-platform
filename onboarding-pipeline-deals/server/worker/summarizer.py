@@ -11,6 +11,11 @@ import os
 import time
 from typing import Optional
 
+from worker.prompts.summarization import (
+    SUMMARIZATION_SYSTEM_PROMPT,
+    SUMMARIZATION_USER_PROMPT,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,12 +27,6 @@ def _cfg():
 
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BACKOFF = (5.0, 15.0, 30.0)   # wait (seconds) before attempt n+1
-
-_SYSTEM_PROMPT = (
-    "You are a financial analyst assistant. Be concise and precise. "
-    "Write in plain, professional English."
-)
-_USER_PROMPT = "Summarize this investment document in two sentences:\n\n{text}"
 
 
 def generate_description(text: str) -> Optional[str]:
@@ -55,8 +54,8 @@ def generate_description(text: str) -> Optional[str]:
             response = client.chat.completions.create(
                 model=_cfg().OPENAI_MODEL,
                 messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": _USER_PROMPT.format(text=truncated)},
+                    {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": SUMMARIZATION_USER_PROMPT.format(text=truncated)},
                 ],
                 max_tokens=120,
                 temperature=0.3,

@@ -14,10 +14,15 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
     FRONTEND_URL: str = "http://localhost:5173"
 
+    # ── Organization defaults ──────────────────────────────────────────────────
+    DEFAULT_CLASSIFICATION_LIMIT: int = 12000  # max classified files per org
+    DEFAULT_VECTORIZATION_LIMIT: int = 800     # max vectorized files per org
+
     # ── Worker tuning ─────────────────────────────────────────────────────────
     LLM_CHUNK_SIZE: int = 30    # docs per LLM call in batch_analyzer
     LLM_TEXT_LIMIT: int = 1500  # chars of text sent per doc to LLM
     INGEST_BATCH_SIZE: int = 500  # max files per download → LLM → persist cycle
+    ORG_PROCESSING_TIMEOUT_HOURS: float = 3.0  # max wall-clock hours per org per run
 
     # ── External vectorizer (Invitus AI Insights) — all optional ─────────────
     # If VECTORIZER_INGEST_URL is not set the worker skips the vectorization step.

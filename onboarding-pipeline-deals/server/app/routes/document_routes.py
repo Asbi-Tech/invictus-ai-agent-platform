@@ -50,8 +50,8 @@ def latest_documents(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> List[LatestDocumentResponse]:
-    """Return the latest processed document per document type for the current user."""
-    documents = get_latest_documents_per_type(db, current_user.id)
+    """Return the latest processed document per document type for the current user's org."""
+    documents = get_latest_documents_per_type(db, current_user.organization_id)
     return [
         LatestDocumentResponse(
             type=doc.doc_type or "pitch_deck",
@@ -70,19 +70,19 @@ def document_stats(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DocumentStatsResponse:
-    """Return aggregated document statistics for the current user."""
-    uid = current_user.id
+    """Return aggregated document statistics for the current user's org."""
+    org_id = current_user.organization_id
 
     total_validated = (
         db.query(Document)
-        .filter(Document.user_id == uid)
+        .filter(Document.organization_id == org_id)
         .count()
     )
 
     shortlisted = (
         db.query(Document)
         .filter(
-            Document.user_id == uid,
+            Document.organization_id == org_id,
             Document.version_status == "current",
             Document.doc_type.in_(_DOC_TYPES),
             Document.status.in_(["processed", "vectorized"]),
@@ -93,7 +93,7 @@ def document_stats(
     archived = (
         db.query(Document)
         .filter(
-            Document.user_id == uid,
+            Document.organization_id == org_id,
             Document.version_status == "superseded",
         )
         .count()
@@ -102,7 +102,7 @@ def document_stats(
     knowledge_base = (
         db.query(Document)
         .filter(
-            Document.user_id == uid,
+            Document.organization_id == org_id,
             Document.vectorizer_doc_id.isnot(None),
         )
         .count()
@@ -125,11 +125,11 @@ def all_documents(
     limit: int = Query(default=2000, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
 ) -> List[AllDocumentResponse]:
-    """Return processed documents for the current user (paginated, default 2000)."""
+    """Return processed documents for the current user's org (paginated, default 2000)."""
     docs = (
         db.query(Document)
         .filter(
-            Document.user_id == current_user.id,
+            Document.organization_id == current_user.organization_id,
             Document.status.in_(["processed", "vectorized"]),
         )
         .order_by(Document.created_at.desc())
@@ -171,7 +171,7 @@ def list_deals(
     """
     deals = (
         db.query(Deal)
-        .filter(Deal.user_id == current_user.id)
+        .filter(Deal.organization_id == current_user.organization_id)
         .order_by(Deal.name)
         .offset(offset)
         .limit(limit)
@@ -300,7 +300,7 @@ def get_deal(
 
     deal = (
         db.query(Deal)
-        .filter(Deal.id == deal_id, Deal.user_id == current_user.id)
+        .filter(Deal.id == deal_id, Deal.organization_id == current_user.organization_id)
         .first()
     )
     if not deal:
@@ -418,7 +418,7 @@ def update_deal_field(
 
     deal = (
         db.query(Deal)
-        .filter(Deal.id == deal_id, Deal.user_id == current_user.id)
+        .filter(Deal.id == deal_id, Deal.organization_id == current_user.organization_id)
         .first()
     )
     if not deal:
@@ -456,11 +456,11 @@ def locked_files(
     limit: int = Query(default=2000, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
 ) -> List[LockedFileWithDeal]:
-    """Return password-protected files for the current user (paginated, default 2000)."""
+    """Return password-protected files for the current user's org (paginated, default 2000)."""
     docs = (
         db.query(Document)
         .filter(
-            Document.user_id == current_user.id,
+            Document.organization_id == current_user.organization_id,
             Document.doc_type == "password_protected",
         )
         .order_by(Document.id)

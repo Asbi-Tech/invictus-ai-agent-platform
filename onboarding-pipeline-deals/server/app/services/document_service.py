@@ -43,9 +43,9 @@ def update_document(db: Session, document_id: int, **kwargs) -> Optional[Documen
     return document
 
 
-def get_latest_documents_per_type(db: Session, user_id: int) -> List[Document]:
+def get_latest_documents_per_type(db: Session, organization_id: int) -> List[Document]:
     """
-    Return the most recent document per (deal_id, doc_type) for a given user.
+    Return the most recent document per (deal_id, doc_type) for a given organization.
 
     Groups by deal so each deal's latest pitch_deck, investment_memo etc. is
     returned independently — not just the single globally newest per type.
@@ -63,7 +63,7 @@ def get_latest_documents_per_type(db: Session, user_id: int) -> List[Document]:
             func.max(Document.drive_created_time).label("max_date"),
         )
         .filter(
-            Document.user_id == user_id,
+            Document.organization_id == organization_id,
             Document.status.in_(["processed", "vectorized"]),
             Document.doc_type.isnot(None),
             Document.deal_id.isnot(None),
@@ -80,7 +80,7 @@ def get_latest_documents_per_type(db: Session, user_id: int) -> List[Document]:
             & (Document.doc_type == deal_subq.c.doc_type)
             & (Document.drive_created_time == deal_subq.c.max_date),
         )
-        .filter(Document.user_id == user_id)
+        .filter(Document.organization_id == organization_id)
         .all()
     )
 
@@ -92,7 +92,7 @@ def get_latest_documents_per_type(db: Session, user_id: int) -> List[Document]:
             func.max(Document.drive_created_time).label("max_date"),
         )
         .filter(
-            Document.user_id == user_id,
+            Document.organization_id == organization_id,
             Document.status.in_(["processed", "vectorized"]),
             Document.doc_type.isnot(None),
             Document.deal_id.is_(None),
@@ -109,7 +109,7 @@ def get_latest_documents_per_type(db: Session, user_id: int) -> List[Document]:
             & (Document.doc_type == folder_subq.c.doc_type)
             & (Document.drive_created_time == folder_subq.c.max_date),
         )
-        .filter(Document.user_id == user_id, Document.deal_id.is_(None))
+        .filter(Document.organization_id == organization_id, Document.deal_id.is_(None))
         .all()
     )
 

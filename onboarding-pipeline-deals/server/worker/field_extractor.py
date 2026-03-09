@@ -25,7 +25,7 @@ from typing import Optional
 
 import requests
 
-from worker.field_definitions import FIELDS_BY_INVESTMENT_TYPE, FieldDef
+from worker.prompts.field_extraction import FIELDS_BY_INVESTMENT_TYPE, FieldDef
 
 logger = logging.getLogger("worker.field_extractor")
 

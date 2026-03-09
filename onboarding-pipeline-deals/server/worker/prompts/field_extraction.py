@@ -1,5 +1,5 @@
 """
-Field definitions for the ExtractFields API, keyed by investment_type.
+Field definitions and extraction prompts for the ExtractFields API.
 
 Each FieldDef maps directly to one entry in the POST /api/ExtractFields
 `fields` array:
