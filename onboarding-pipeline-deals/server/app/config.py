@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
     FRONTEND_URL: str = "http://localhost:5173"
 
+    # ── Azure OpenAI (set these to use Azure instead of direct OpenAI) ──────
+    AZURE_OPENAI_API_KEY: Optional[str] = None
+    AZURE_OPENAI_ENDPOINT: Optional[str] = None       # e.g. https://your-resource.openai.azure.com
+    AZURE_OPENAI_DEPLOYMENT: Optional[str] = None      # deployment name in Azure
+    AZURE_OPENAI_API_VERSION: str = "2024-12-01-preview"
+
     # ── Organization defaults ──────────────────────────────────────────────────
     DEFAULT_CLASSIFICATION_LIMIT: int = 12000  # max classified files per org
     DEFAULT_VECTORIZATION_LIMIT: int = 800     # max vectorized files per org
@@ -65,6 +71,15 @@ class Settings(BaseSettings):
                 "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
             )
         return v
+
+    @property
+    def use_azure_openai(self) -> bool:
+        """True when all required Azure OpenAI settings are provided."""
+        return bool(
+            self.AZURE_OPENAI_API_KEY
+            and self.AZURE_OPENAI_ENDPOINT
+            and self.AZURE_OPENAI_DEPLOYMENT
+        )
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

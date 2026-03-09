@@ -73,19 +73,19 @@ def analyze_batch(
     if not items:
         return []
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.warning("OPENAI_API_KEY not set — using fallback for all documents")
+    cfg = _cfg()
+    if not (cfg.use_azure_openai or os.getenv("OPENAI_API_KEY")):
+        logger.warning("No OpenAI credentials set — using fallback for all documents")
         return [_fallback_result(item) for item in items]
 
-    chunk_size = _cfg().LLM_CHUNK_SIZE
+    chunk_size = cfg.LLM_CHUNK_SIZE
     chunks = [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
     # Run all chunk calls in parallel — each is an independent HTTP request
     chunk_results_map: dict[int, list[AnalysisResult]] = {}
     with ThreadPoolExecutor(max_workers=min(len(chunks), 10)) as pool:
         futures = {
-            pool.submit(_analyze_chunk, chunk, api_key, custom_prompt): idx
+            pool.submit(_analyze_chunk, chunk, custom_prompt): idx
             for idx, chunk in enumerate(chunks)
         }
         for future in as_completed(futures):
@@ -105,14 +105,34 @@ def analyze_batch(
 
 # ── Chunk processing ──────────────────────────────────────────────────────────
 
-def _analyze_chunk(chunk: list[dict], api_key: str, custom_prompt: Optional[str] = None) -> list[AnalysisResult]:
+def _get_llm_client():
+    """Return the appropriate OpenAI-compatible client (Azure or direct)."""
+    cfg = _cfg()
+    if cfg.use_azure_openai:
+        from openai import AzureOpenAI
+        return AzureOpenAI(
+            api_key=cfg.AZURE_OPENAI_API_KEY,
+            azure_endpoint=cfg.AZURE_OPENAI_ENDPOINT,
+            api_version=cfg.AZURE_OPENAI_API_VERSION,
+        )
+    from openai import OpenAI
+    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _get_model_name() -> str:
+    """Return the model/deployment name to use in completions."""
+    cfg = _cfg()
+    if cfg.use_azure_openai:
+        return cfg.AZURE_OPENAI_DEPLOYMENT
+    return cfg.OPENAI_MODEL
+
+
+def _analyze_chunk(chunk: list[dict], custom_prompt: Optional[str] = None) -> list[AnalysisResult]:
     prompt = _build_prompt(chunk, firm_context=custom_prompt)
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=api_key)
+        client = _get_llm_client()
         response = client.chat.completions.create(
-            model=_cfg().OPENAI_MODEL,
+            model=_get_model_name(),
             messages=[
                 {
                     "role": "system",

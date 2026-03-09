@@ -29,6 +29,28 @@ _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BACKOFF = (5.0, 15.0, 30.0)   # wait (seconds) before attempt n+1
 
 
+def _get_llm_client():
+    """Return the appropriate OpenAI-compatible client (Azure or direct)."""
+    cfg = _cfg()
+    if cfg.use_azure_openai:
+        from openai import AzureOpenAI
+        return AzureOpenAI(
+            api_key=cfg.AZURE_OPENAI_API_KEY,
+            azure_endpoint=cfg.AZURE_OPENAI_ENDPOINT,
+            api_version=cfg.AZURE_OPENAI_API_VERSION,
+        )
+    from openai import OpenAI
+    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _get_model_name() -> str:
+    """Return the model/deployment name to use in completions."""
+    cfg = _cfg()
+    if cfg.use_azure_openai:
+        return cfg.AZURE_OPENAI_DEPLOYMENT
+    return cfg.OPENAI_MODEL
+
+
 def generate_description(text: str) -> Optional[str]:
     """
     Generate a short two-sentence description of the document.
@@ -39,20 +61,18 @@ def generate_description(text: str) -> Optional[str]:
     Returns:
         A two-sentence summary string, or a plain-text fallback, or None.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.warning("OPENAI_API_KEY not set – using fallback summarization")
+    cfg = _cfg()
+    if not (cfg.use_azure_openai or os.getenv("OPENAI_API_KEY")):
+        logger.warning("No OpenAI credentials set – using fallback summarization")
         return _fallback_summary(text)
 
     last_exc: Exception | None = None
     for attempt in range(1, _MAX_LLM_RETRIES + 1):
         try:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=api_key)
+            client = _get_llm_client()
             truncated = text[:3000]
             response = client.chat.completions.create(
-                model=_cfg().OPENAI_MODEL,
+                model=_get_model_name(),
                 messages=[
                     {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
                     {"role": "user", "content": SUMMARIZATION_USER_PROMPT.format(text=truncated)},
