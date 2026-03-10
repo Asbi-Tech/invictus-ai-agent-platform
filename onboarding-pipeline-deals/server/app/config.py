@@ -26,10 +26,11 @@ class Settings(BaseSettings):
 
     # ── Worker tuning ─────────────────────────────────────────────────────────
     LLM_CHUNK_SIZE: int = 30    # docs per LLM call in batch_analyzer
-    LLM_VISION_CHUNK_SIZE: int = 15  # docs per LLM call when page images are present
-    LLM_TEXT_LIMIT: int = 3000  # chars of text sent per doc to LLM
+    LLM_VISION_CHUNK_SIZE: int = 5   # docs per LLM call when page images are present (accuracy > speed)
+    LLM_TEXT_LIMIT: int = 5000  # chars of text sent per doc to LLM
     INGEST_BATCH_SIZE: int = 500  # max files per download → LLM → persist cycle
     ORG_PROCESSING_TIMEOUT_HOURS: float = 3.0  # max wall-clock hours per org per run
+    LLM_DEBUG: bool = False  # write LLM request/response payloads to server/worker/logs/llm_debug/
 
     # ── External vectorizer (Invitus AI Insights) — all optional ─────────────
     # If VECTORIZER_INGEST_URL is not set the worker skips the vectorization step.

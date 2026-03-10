@@ -40,11 +40,13 @@ const STAGE_ORDER = [
   "vectorizing",
 ];
 
-function stageProgress(stage: string | null): number {
+function stageProgress(stage: string | null, status?: string): number {
+  if (status === "completed") return 100;
   if (!stage) return 0;
   const idx = STAGE_ORDER.indexOf(stage);
   if (idx < 0) return 0;
-  return Math.round(((idx + 1) / STAGE_ORDER.length) * 100);
+  // Map stages to 0–90% range; 100% only on actual completion
+  return Math.round(((idx + 0.5) / STAGE_ORDER.length) * 90);
 }
 
 // ── Stats display helpers ────────────────────────────────────────────────
@@ -98,15 +100,14 @@ const SyncStatusCard = () => {
   // Run state
   const [isStarting, setIsStarting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
-  const [isRunning, setIsRunning] = useState(false);
   const [elapsedTimer, setElapsedTimer] = useState<number>(0);
 
   // History
   const [history, setHistory] = useState<WorkerRunHistory[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
-  // SSE progress
-  const progress = useWorkerProgress(isRunning);
+  // SSE progress (self-contained: checks server on mount, reconnects on nav back)
+  const { progress, isRunning, refresh: refreshProgress } = useWorkerProgress();
 
   // ── Fetch initial status ────────────────────────────────────────────────
 
@@ -115,7 +116,6 @@ const SyncStatusCard = () => {
     try {
       const s = await api.getSyncStatus();
       setSyncStatus(s);
-      setIsRunning(s.is_running);
     } catch {
       // ignore
     }
@@ -145,18 +145,15 @@ const SyncStatusCard = () => {
   useEffect(() => {
     if (!progress) return;
     if (progress.status === "completed") {
-      setIsRunning(false);
       toast.success("Pipeline completed successfully");
       refreshStatus();
       api.getDocumentStats().then(setStats).catch(() => null);
       loadHistory();
     } else if (progress.status === "failed") {
-      setIsRunning(false);
       toast.error("Pipeline run failed");
       refreshStatus();
       loadHistory();
     } else if (progress.status === "cancelled") {
-      setIsRunning(false);
       toast("Pipeline run was cancelled");
       refreshStatus();
       loadHistory();
@@ -184,8 +181,8 @@ const SyncStatusCard = () => {
     setIsStarting(true);
     try {
       await api.startPipelineRun();
-      setIsRunning(true);
       toast.success("Pipeline started");
+      refreshProgress(); // triggers hook to re-check server and open SSE
       refreshStatus();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to start";
@@ -218,7 +215,7 @@ const SyncStatusCard = () => {
     ? (STAGE_LABELS[progress.stage] ?? progress.stage)
     : STAGE_LABELS["pending"];
 
-  const progressPct = stageProgress(progress?.stage ?? null);
+  const progressPct = stageProgress(progress?.stage ?? null, progress?.status);
 
   const progressData = progress?.data ?? {};
 
@@ -296,7 +293,10 @@ const SyncStatusCard = () => {
               <span className="text-muted-foreground">{formatElapsed(elapsedTimer)}</span>
             </div>
 
-            <Progress value={progressPct} className="h-2" />
+            <Progress
+              value={progressPct}
+              className={`h-2 ${progress?.stage === "vectorizing" ? "animate-pulse" : ""}`}
+            />
 
             {/* Progress counters */}
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">

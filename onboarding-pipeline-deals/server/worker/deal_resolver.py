@@ -68,6 +68,12 @@ _SUFFIX_RE = re.compile(
 # Characters to strip when building the lookup key
 _NON_ALNUM = re.compile(r"[^a-z0-9]")
 
+# Common folder suffixes to strip before treating segment as a deal name
+_FOLDER_SUFFIX_RE = re.compile(
+    r"[_\s-]*(TEST|VALIDATION|DOCS|FILES|DATA|DOCUMENTS|FOLDER)\s*$",
+    re.IGNORECASE,
+)
+
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
@@ -79,15 +85,23 @@ def extract_deal_from_folder_path(folder_path: Optional[str]) -> Optional[str]:
     Strategy: walk segments from left to right; return the first non-generic one.
     This means "Portfolio/Acme Corp/Q1 2025" → "Acme Corp" (Portfolio is generic,
     Q1 2025 is generic, Acme Corp is the meaningful middle segment).
+
+    Common folder suffixes like _TEST, _VALIDATION, _DOCS are stripped so that
+    "ICG_TEST" → "ICG" and "QUALIA_VALIDATION" → "Qualia".
     """
     if not folder_path:
         return None
 
     segments = [s.strip() for s in folder_path.split("/") if s.strip()]
     for segment in segments:
-        key = _normalize_key(segment)
+        # Strip common folder suffixes before checking
+        cleaned = _FOLDER_SUFFIX_RE.sub("", segment).strip()
+        cleaned = cleaned.replace("_", " ").strip()
+        if not cleaned:
+            continue
+        key = _normalize_key(cleaned)
         if key and key not in _GENERIC and not key.isdigit() and len(key) >= 2:
-            return segment.title()
+            return normalize_deal_name(cleaned)
     return None
 
 

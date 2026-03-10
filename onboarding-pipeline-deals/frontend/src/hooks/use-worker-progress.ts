@@ -1,59 +1,96 @@
-import { useEffect, useRef, useState } from "react";
-import type { WorkerProgress } from "@/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, WorkerProgress } from "@/lib/api";
 
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? "";
 
 /**
- * SSE hook that streams real-time worker progress updates.
- * Connects when `isRunning` is true and disconnects when the run finishes.
+ * Self-contained SSE hook for worker progress.
+ *
+ * On mount (and when `refresh()` is called), checks `/sync/status` to see
+ * if a run is active. If so, opens an SSE connection for real-time updates.
+ * On unmount (navigation away), the SSE connection is closed. On remount
+ * (navigation back), it re-checks the server and reconnects automatically.
  */
-export function useWorkerProgress(isRunning: boolean): WorkerProgress | null {
+export function useWorkerProgress(): {
+  progress: WorkerProgress | null;
+  isRunning: boolean;
+  refresh: () => void;
+} {
   const [progress, setProgress] = useState<WorkerProgress | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [trigger, setTrigger] = useState(0);
   const esRef = useRef<EventSource | null>(null);
+  const cancelledRef = useRef(false);
+
+  const refresh = useCallback(() => setTrigger((t) => t + 1), []);
 
   useEffect(() => {
-    if (!isRunning) {
-      // Clean up any lingering connection
+    cancelledRef.current = false;
+
+    function connectSSE() {
       esRef.current?.close();
-      esRef.current = null;
-      return;
+      const token = localStorage.getItem("token");
+      if (!token) return;
+
+      const url = `${BASE_URL}/sync/run/progress?token=${encodeURIComponent(token)}`;
+      const es = new EventSource(url);
+      esRef.current = es;
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as WorkerProgress;
+          setProgress(data);
+
+          if (["completed", "failed", "cancelled"].includes(data.status)) {
+            setIsRunning(false);
+            es.close();
+            esRef.current = null;
+          }
+        } catch {
+          // Ignore malformed events
+        }
+      };
+
+      es.onerror = () => {
+        if (es.readyState === EventSource.CLOSED) {
+          esRef.current = null;
+          // SSE closed unexpectedly — re-check server state after a delay
+          if (!cancelledRef.current) {
+            setTimeout(() => {
+              if (!cancelledRef.current) checkAndConnect();
+            }, 3000);
+          }
+        }
+      };
     }
 
-    const token = localStorage.getItem("token");
-    if (!token) return;
-
-    const url = `${BASE_URL}/sync/run/progress?token=${encodeURIComponent(token)}`;
-    const es = new EventSource(url);
-    esRef.current = es;
-
-    es.onmessage = (event) => {
+    async function checkAndConnect() {
       try {
-        const data = JSON.parse(event.data) as WorkerProgress;
-        setProgress(data);
+        const status = await api.getSyncStatus();
+        if (cancelledRef.current) return;
 
-        // Auto-close on terminal states
-        if (["completed", "failed", "cancelled"].includes(data.status)) {
-          es.close();
+        if (status.is_running) {
+          setIsRunning(true);
+          connectSSE();
+        } else {
+          setIsRunning(false);
+          setProgress(null);
+          esRef.current?.close();
           esRef.current = null;
         }
       } catch {
-        // Ignore malformed events
+        // ignore — will retry on next trigger/mount
       }
-    };
+    }
 
-    es.onerror = () => {
-      // EventSource will auto-reconnect on transient errors.
-      // On permanent failure it stays in CLOSED state.
-      if (es.readyState === EventSource.CLOSED) {
-        esRef.current = null;
-      }
-    };
+    checkAndConnect();
 
     return () => {
-      es.close();
+      cancelledRef.current = true;
+      esRef.current?.close();
       esRef.current = null;
     };
-  }, [isRunning]);
+  }, [trigger]);
 
-  return progress;
+  return { progress, isRunning, refresh };
 }

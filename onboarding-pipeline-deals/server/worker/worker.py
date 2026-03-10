@@ -66,7 +66,7 @@ from worker.drive_ingestion import (
 )
 from worker.parser import extract_text, extract_page_images, PasswordProtectedError
 from worker.batch_analyzer import analyze_batch, AnalysisResult
-from worker.deal_resolver import get_or_create_deal
+from worker.deal_resolver import get_or_create_deal, extract_deal_from_folder_path
 from worker.vectorizer import ingest_and_analyze_deal, rerun_analytical_and_fields
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -383,7 +383,7 @@ def process_organization(
                 logger.error(f"Skipping '{file_name}' – text extraction failed: {exc}")
                 return None
 
-            page_images = extract_page_images(content, file_name, max_pages=2)
+            page_images = extract_page_images(content, file_name)
 
             return {
                 "file_meta": file_meta,
@@ -558,9 +558,10 @@ def process_organization(
                     final_status = "processed"
                     final_type = doc_type
                     deal_id = None
-                    if raw_deal_name:
+                    deal_name = raw_deal_name or extract_deal_from_folder_path(folder_path)
+                    if deal_name:
                         deal = get_or_create_deal(
-                            db, org.id, raw_deal_name, existing_deals, user_id=file_user_id
+                            db, org.id, deal_name, existing_deals, user_id=file_user_id
                         )
                         deal_id = deal.id if deal else None
 
