@@ -169,13 +169,19 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
       Pass A (deal-scoped)   — docs with deal_id: group by (org_id, doc_type, deal_id).
       Pass B (folder-scoped) — docs without deal_id: group by (org_id, doc_type, folder_path).
 
-    Both passes require doc_created_date to determine which is newer.
+    Both passes use doc_created_date (falling back to drive_created_time) to
+    determine which document is newer.
     """
+
+    def _effective_date(doc):
+        """Return the best available date for ordering: doc_created_date or drive_created_time."""
+        return doc.doc_created_date or doc.drive_created_time
+
     # Split into two buckets
     deal_docs: list = []
     folder_docs: list = []
     for doc in processed_docs:
-        if not doc.doc_created_date:
+        if not _effective_date(doc):
             continue
         if doc.deal_id:
             deal_docs.append(doc)
@@ -191,8 +197,10 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
         a_groups.setdefault(key, []).append(doc)
 
     for (org_id, doc_type, deal_id), docs in a_groups.items():
-        newest = max(docs, key=lambda d: d.doc_created_date)
+        newest = max(docs, key=lambda d: _effective_date(d))
+        newest_date = _effective_date(newest)
         exclude_ids = [d.id for d in docs]
+        # Compare against both doc_created_date and drive_created_time
         n = (
             db.query(Document)
             .filter(
@@ -200,7 +208,17 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
                 Document.doc_type == doc_type,
                 Document.deal_id == deal_id,
                 Document.id.notin_(exclude_ids),
-                Document.doc_created_date < newest.doc_created_date,
+                sqlalchemy.or_(
+                    sqlalchemy.and_(
+                        Document.doc_created_date.isnot(None),
+                        Document.doc_created_date < newest_date,
+                    ),
+                    sqlalchemy.and_(
+                        Document.doc_created_date.is_(None),
+                        Document.drive_created_time.isnot(None),
+                        Document.drive_created_time < newest_date,
+                    ),
+                ),
                 Document.version_status == "current",
             )
             .update({"version_status": "superseded"}, synchronize_session="fetch")
@@ -214,7 +232,8 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
         b_groups.setdefault(key, []).append(doc)
 
     for (org_id, doc_type, folder_path), docs in b_groups.items():
-        newest = max(docs, key=lambda d: d.doc_created_date)
+        newest = max(docs, key=lambda d: _effective_date(d))
+        newest_date = _effective_date(newest)
         exclude_ids = [d.id for d in docs]
         n = (
             db.query(Document)
@@ -224,7 +243,17 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
                 Document.deal_id.is_(None),
                 Document.folder_path == folder_path,
                 Document.id.notin_(exclude_ids),
-                Document.doc_created_date < newest.doc_created_date,
+                sqlalchemy.or_(
+                    sqlalchemy.and_(
+                        Document.doc_created_date.isnot(None),
+                        Document.doc_created_date < newest_date,
+                    ),
+                    sqlalchemy.and_(
+                        Document.doc_created_date.is_(None),
+                        Document.drive_created_time.isnot(None),
+                        Document.drive_created_time < newest_date,
+                    ),
+                ),
                 Document.version_status == "current",
             )
             .update({"version_status": "superseded"}, synchronize_session="fetch")

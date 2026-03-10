@@ -116,7 +116,7 @@ def analyze_batch(
     if has_images:
         # Azure OpenAI enforces a 50-image-per-request limit.
         # Dynamically size chunks so total images stay under the cap.
-        _MAX_IMAGES_PER_REQUEST = 10  # aggressive cap — accuracy over speed
+        _MAX_IMAGES_PER_REQUEST = 5  # ≤ max pages/doc → guarantees 1 doc per chunk
         total_images = sum(len(item.get("page_images", [])) for item in items)
         avg_images = total_images / len(items) if items else 1
         chunk_size = max(1, min(
@@ -620,6 +620,12 @@ def _parse_response(raw: str, chunk: list[dict]) -> list[AnalysisResult]:
         logger.error(f"Failed to parse LLM JSON response: {exc}\nRaw: {raw[:500]}")
         return [_fallback_result(item) for item in chunk]
 
+    if len(entries) < len(chunk):
+        logger.warning(
+            f"LLM returned {len(entries)} results for {len(chunk)} docs — "
+            f"{len(chunk) - len(entries)} doc(s) will use heuristic fallback"
+        )
+
     # Build lookup by custom_id, fall back to positional if id is missing
     by_id: dict[str, dict] = {}
     for i, entry in enumerate(entries):
@@ -714,8 +720,12 @@ def _infer_type_from_filename(name: str) -> str:
 
 
 def _fallback_result(item: dict) -> AnalysisResult:
+    from worker.deal_resolver import extract_deal_from_folder_path
+
+    folder_deal = extract_deal_from_folder_path(item.get("folder_path", ""))
     return AnalysisResult(
         custom_id=item["custom_id"],
         doc_type=_infer_type_from_filename(item.get("file_name", "")),
+        deal_name=folder_deal or None,
         from_heuristic=True,
     )
