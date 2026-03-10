@@ -92,32 +92,57 @@ def delete_deal(db: Session, deal_id: int, organization_id: int) -> dict:
     }
 
 
-# ── Merge ────────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+_TYPE_LABELS: dict[str, str] = {
+    "pitch_deck": "Pitch Deck",
+    "investment_memo": "Investment Memo",
+    "prescreening_report": "Prescreening Report",
+    "meeting_minutes": "Meeting Minutes",
+}
 
 
-def merge_deals(
-    db: Session,
-    source_deal_id: int,
-    target_deal_id: int,
-    organization_id: int,
-    new_name: Optional[str] = None,
-) -> dict:
-    """
-    Merge source deal into target deal.
+def _fmt_date(dt) -> str | None:
+    return dt.strftime("%Y-%m-%d") if dt else None
 
-    - Documents from source are reassigned to target.
-    - When both deals have a current doc of the same type, the newer one
-      (by doc_created_date) stays current; the older one is superseded.
-    - Analytical results and vectorizer state are cleared so the worker
-      re-processes the merged deal on its next run.
-    - The source deal is deleted after merge.
-    """
+
+def _best_current_doc_per_type(docs: list[Document]) -> dict[str, Document]:
+    """Pick the newest current doc per doc_type from a list of documents."""
+    by_type: dict[str, Document] = {}
+    for doc in docs:
+        existing = by_type.get(doc.doc_type)
+        if existing is None or (
+            doc.doc_created_date
+            and (
+                existing.doc_created_date is None
+                or doc.doc_created_date > existing.doc_created_date
+            )
+        ):
+            by_type[doc.doc_type] = doc
+    return by_type
+
+
+def _fetch_current_docs(db: Session, deal_id: int) -> list[Document]:
+    return (
+        db.query(Document)
+        .filter(
+            Document.deal_id == deal_id,
+            Document.version_status == "current",
+            Document.doc_type.in_(DOC_TYPES),
+        )
+        .all()
+    )
+
+
+def _validate_merge_deals(
+    db: Session, source_deal_id: int, target_deal_id: int, organization_id: int
+) -> tuple[Deal, Deal]:
+    """Validate and return (source_deal, target_deal)."""
     if source_deal_id == target_deal_id:
         raise HTTPException(
             status_code=400, detail="Cannot merge a deal with itself"
         )
 
-    # Fetch both deals with org ownership check
     source_deal = (
         db.query(Deal)
         .filter(Deal.id == source_deal_id, Deal.organization_id == organization_id)
@@ -134,68 +159,155 @@ def merge_deals(
     if not target_deal:
         raise HTTPException(status_code=404, detail="Target deal not found")
 
+    return source_deal, target_deal
+
+
+# ── Preview merge (LLM-assisted) ────────────────────────────────────────────
+
+
+def preview_merge(
+    db: Session,
+    source_deal_id: int,
+    target_deal_id: int,
+    organization_id: int,
+    new_name: Optional[str] = None,
+) -> dict:
+    """
+    Preview a merge: find doc-type conflicts and get LLM recommendations.
+
+    Returns a dict matching MergePreviewResponse schema.
+    """
+    from .llm_merge import resolve_merge_conflict
+
+    source_deal, target_deal = _validate_merge_deals(
+        db, source_deal_id, target_deal_id, organization_id
+    )
+
+    source_by_type = _best_current_doc_per_type(_fetch_current_docs(db, source_deal_id))
+    target_by_type = _best_current_doc_per_type(_fetch_current_docs(db, target_deal_id))
+
+    deal_name = new_name.strip() if new_name and new_name.strip() else target_deal.name
+
+    conflicts = []
+    conflict_types = set()
+    for dtype in DOC_TYPES:
+        s_doc = source_by_type.get(dtype)
+        t_doc = target_by_type.get(dtype)
+        if s_doc and t_doc:
+            conflict_types.add(dtype)
+            llm_result = resolve_merge_conflict(
+                doc_type_label=_TYPE_LABELS.get(dtype, dtype),
+                deal_name=deal_name,
+                source_deal_name=source_deal.name,
+                target_deal_name=target_deal.name,
+                source_file_name=s_doc.file_name,
+                source_date=_fmt_date(s_doc.doc_created_date),
+                source_description=s_doc.description,
+                target_file_name=t_doc.file_name,
+                target_date=_fmt_date(t_doc.doc_created_date),
+                target_description=t_doc.description,
+            )
+            conflicts.append({
+                "doc_type": dtype,
+                "doc_type_label": _TYPE_LABELS.get(dtype, dtype),
+                "source_doc": {
+                    "id": s_doc.id,
+                    "file_name": s_doc.file_name,
+                    "date": _fmt_date(s_doc.doc_created_date),
+                    "description": s_doc.description,
+                },
+                "target_doc": {
+                    "id": t_doc.id,
+                    "file_name": t_doc.file_name,
+                    "date": _fmt_date(t_doc.doc_created_date),
+                    "description": t_doc.description,
+                },
+                "recommendation": llm_result["recommendation"],
+                "reason": llm_result["reason"],
+            })
+
+    # Count source docs that will move without conflict
+    total_source_docs = (
+        db.query(Document)
+        .filter(Document.deal_id == source_deal_id)
+        .count()
+    )
+
+    source_doc_count = sum(1 for v in source_by_type.values() if v is not None)
+    target_doc_count = sum(1 for v in target_by_type.values() if v is not None)
+
+    return {
+        "source_deal": {
+            "id": source_deal.id,
+            "name": source_deal.name,
+            "doc_count": source_doc_count,
+        },
+        "target_deal": {
+            "id": target_deal.id,
+            "name": target_deal.name,
+            "doc_count": target_doc_count,
+        },
+        "conflicts": conflicts,
+        "documents_to_move": total_source_docs,
+    }
+
+
+# ── Merge ────────────────────────────────────────────────────────────────────
+
+
+def merge_deals(
+    db: Session,
+    source_deal_id: int,
+    target_deal_id: int,
+    organization_id: int,
+    new_name: Optional[str] = None,
+    resolutions: Optional[list[dict]] = None,
+) -> dict:
+    """
+    Merge source deal into target deal.
+
+    - Documents from source are reassigned to target.
+    - When both deals have a current doc of the same type:
+      - If resolutions are provided (from user via preview), use those choices.
+      - Otherwise fall back to date-based comparison (newer stays current).
+    - Analytical results and vectorizer state are cleared so the worker
+      re-processes the merged deal on its next run.
+    - The source deal is deleted after merge.
+    """
+    source_deal, target_deal = _validate_merge_deals(
+        db, source_deal_id, target_deal_id, organization_id
+    )
+
+    source_by_type = _best_current_doc_per_type(_fetch_current_docs(db, source_deal_id))
+    target_by_type = _best_current_doc_per_type(_fetch_current_docs(db, target_deal_id))
+
+    # Build resolution lookup: doc_type → keep_doc_id
+    resolution_map: dict[str, int] = {}
+    if resolutions:
+        for r in resolutions:
+            resolution_map[r["doc_type"]] = r["keep_doc_id"]
+
     # ── Version conflict resolution ──────────────────────────────────────
-    # For each doc_type, if both deals have a current doc, keep the newer one.
-
-    source_docs = (
-        db.query(Document)
-        .filter(
-            Document.deal_id == source_deal_id,
-            Document.version_status == "current",
-            Document.doc_type.in_(DOC_TYPES),
-        )
-        .all()
-    )
-    target_docs = (
-        db.query(Document)
-        .filter(
-            Document.deal_id == target_deal_id,
-            Document.version_status == "current",
-            Document.doc_type.in_(DOC_TYPES),
-        )
-        .all()
-    )
-
-    # Build lookup: doc_type → newest current doc per deal
-    source_by_type: dict[str, Document] = {}
-    for doc in source_docs:
-        existing = source_by_type.get(doc.doc_type)
-        if existing is None or (
-            doc.doc_created_date
-            and (
-                existing.doc_created_date is None
-                or doc.doc_created_date > existing.doc_created_date
-            )
-        ):
-            source_by_type[doc.doc_type] = doc
-
-    target_by_type: dict[str, Document] = {}
-    for doc in target_docs:
-        existing = target_by_type.get(doc.doc_type)
-        if existing is None or (
-            doc.doc_created_date
-            and (
-                existing.doc_created_date is None
-                or doc.doc_created_date > existing.doc_created_date
-            )
-        ):
-            target_by_type[doc.doc_type] = doc
-
-    # Resolve conflicts: when both have the same type, supersede the older one
     documents_superseded = 0
     for dtype in DOC_TYPES:
         s_doc = source_by_type.get(dtype)
         t_doc = target_by_type.get(dtype)
         if s_doc and t_doc:
-            # Determine which is newer; tie-break: target wins
-            s_date = s_doc.doc_created_date
-            t_date = t_doc.doc_created_date
-            if s_date and (t_date is None or s_date > t_date):
-                # Source doc is newer — supersede target's doc
-                t_doc.version_status = "superseded"
+            if dtype in resolution_map:
+                # User chose which to keep
+                keep_id = resolution_map[dtype]
+                if keep_id == s_doc.id:
+                    t_doc.version_status = "superseded"
+                else:
+                    s_doc.version_status = "superseded"
             else:
-                # Target doc is newer or tie — supersede source's doc
-                s_doc.version_status = "superseded"
+                # Fallback: date-based, tie-break: target wins
+                s_date = s_doc.doc_created_date
+                t_date = t_doc.doc_created_date
+                if s_date and (t_date is None or s_date > t_date):
+                    t_doc.version_status = "superseded"
+                else:
+                    s_doc.version_status = "superseded"
             documents_superseded += 1
 
     # ── Reassign all source documents to target deal ─────────────────────

@@ -162,12 +162,20 @@ class DeleteDealResponse(BaseModel):
     documents_unlinked: int
 
 
+class MergeResolution(BaseModel):
+    """User's choice for a single doc-type conflict during merge."""
+
+    doc_type: str
+    keep_doc_id: int  # which document to keep as current
+
+
 class MergeDealRequest(BaseModel):
     """Request body for merging two deals."""
 
     source_deal_id: int  # deal to absorb (will be deleted)
     target_deal_id: int  # deal to keep
     new_name: Optional[str] = None
+    resolutions: Optional[list[MergeResolution]] = None  # user's conflict choices
 
 
 class MergeDealResponse(BaseModel):
@@ -178,3 +186,51 @@ class MergeDealResponse(BaseModel):
     source_deal_id: int
     documents_moved: int
     documents_superseded: int
+
+
+# ── Merge preview (LLM-assisted conflict resolution) ────────────────────────
+
+
+class MergeDocInfo(BaseModel):
+    """Brief info about a document involved in a merge conflict."""
+
+    id: int
+    file_name: str
+    date: Optional[str] = None
+    description: Optional[str] = None
+
+
+class MergeDealInfo(BaseModel):
+    """Brief deal info for the merge preview."""
+
+    id: int
+    name: str
+    doc_count: int
+
+
+class MergeConflict(BaseModel):
+    """A doc-type conflict where both deals have a current document."""
+
+    doc_type: str
+    doc_type_label: str
+    source_doc: MergeDocInfo
+    target_doc: MergeDocInfo
+    recommendation: str  # "keep_source" | "keep_target"
+    reason: str  # LLM explanation
+
+
+class MergePreviewRequest(BaseModel):
+    """Request body for previewing a merge (finds conflicts + LLM recommendations)."""
+
+    source_deal_id: int
+    target_deal_id: int
+    new_name: Optional[str] = None
+
+
+class MergePreviewResponse(BaseModel):
+    """Preview of what a merge will do, including LLM-resolved conflicts."""
+
+    source_deal: MergeDealInfo
+    target_deal: MergeDealInfo
+    conflicts: list[MergeConflict]
+    documents_to_move: int  # non-conflicting source docs that will transfer

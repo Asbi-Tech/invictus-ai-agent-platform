@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { api, DealResponse } from "@/lib/api";
+import { api, DealResponse, MergePreviewResponse, MergeResolution } from "@/lib/api";
 import Navbar from "@/components/Navbar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,7 +16,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { Folder, FolderOpen, Search, Merge, Check, Trash2 } from "lucide-react";
+import { Folder, FolderOpen, Search, Merge, Check, Trash2, Loader2, FileText } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -50,6 +50,9 @@ const Documents = () => {
   const [mergeOpen, setMergeOpen] = useState(false);
   const [mergeName, setMergeName] = useState("");
   const [merging, setMerging] = useState(false);
+  const [mergePreview, setMergePreview] = useState<MergePreviewResponse | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [resolutions, setResolutions] = useState<Record<string, number>>({});
 
   // Delete state
   const [deleteTarget, setDeleteTarget] = useState<DealResponse | null>(null);
@@ -92,14 +95,36 @@ const Documents = () => {
     setMergeMode(false);
     setSelected([]);
     setMergeName("");
+    setMergePreview(null);
+    setResolutions({});
   }
 
-  function openMergeDialog() {
+  async function openMergeDialog() {
     if (selected.length !== 2) return;
-    // Pre-fill name with target deal's name
     const target = dealsWithDocs.find((d) => d.id === selected[1]);
     setMergeName(target?.name ?? "");
     setMergeOpen(true);
+    setMergePreview(null);
+    setResolutions({});
+
+    // Fetch preview with LLM conflict resolution
+    setPreviewLoading(true);
+    try {
+      const preview = await api.previewMerge(selected[0], selected[1]);
+      setMergePreview(preview);
+      // Pre-fill resolutions with LLM recommendations
+      const defaults: Record<string, number> = {};
+      for (const c of preview.conflicts) {
+        defaults[c.doc_type] =
+          c.recommendation === "keep_source" ? c.source_doc.id : c.target_doc.id;
+      }
+      setResolutions(defaults);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to preview merge");
+      setMergeOpen(false);
+    } finally {
+      setPreviewLoading(false);
+    }
   }
 
   async function confirmMerge() {
@@ -110,7 +135,17 @@ const Documents = () => {
       const trimmed = mergeName.trim();
       const targetDeal = dealsWithDocs.find((d) => d.id === targetId);
       const newName = trimmed && trimmed !== targetDeal?.name ? trimmed : undefined;
-      const res = await api.mergeDeals(sourceId, targetId, newName);
+
+      // Build resolutions array from user's choices
+      const mergeResolutions: MergeResolution[] | undefined =
+        mergePreview && mergePreview.conflicts.length > 0
+          ? mergePreview.conflicts.map((c) => ({
+              doc_type: c.doc_type,
+              keep_doc_id: resolutions[c.doc_type] ?? c.target_doc.id,
+            }))
+          : undefined;
+
+      const res = await api.mergeDeals(sourceId, targetId, newName, mergeResolutions);
       toast.success(
         `Merged into "${res.target_deal_name}" — ${res.documents_moved} doc(s) moved, ${res.documents_superseded} superseded`
       );
@@ -273,36 +308,147 @@ const Documents = () => {
         )}
 
         {/* Merge confirmation dialog */}
-        <Dialog open={mergeOpen} onOpenChange={(open) => { if (!open && !merging) { setMergeOpen(false); } }}>
-          <DialogContent>
+        <Dialog open={mergeOpen} onOpenChange={(open) => { if (!open && !merging && !previewLoading) { setMergeOpen(false); } }}>
+          <DialogContent className={mergePreview && mergePreview.conflicts.length > 0 ? "sm:max-w-2xl" : ""}>
             <DialogHeader>
               <DialogTitle>Merge deals</DialogTitle>
               <DialogDescription>
                 "{sourceDeal?.name}" will be absorbed into "{targetDeal?.name}".
-                Documents with the same type will be versioned automatically.
-                The merged deal will be re-analyzed on the next processing run.
+                {mergePreview && mergePreview.conflicts.length > 0
+                  ? " Review the document conflicts below before confirming."
+                  : " The merged deal will be re-analyzed on the next processing run."}
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-3 py-2">
-              <label className="block text-sm font-medium text-foreground">
-                Deal name
-              </label>
-              <Input
-                value={mergeName}
-                onChange={(e) => setMergeName(e.target.value)}
-                placeholder={targetDeal?.name}
-                disabled={merging}
-                onKeyDown={(e) => { if (e.key === "Enter") confirmMerge(); }}
-              />
-              <p className="text-xs text-muted-foreground">
-                Leave as-is to keep the target deal's name, or type a new name.
-              </p>
-            </div>
+
+            {/* Loading state while preview is fetching */}
+            {previewLoading && (
+              <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Analyzing documents for conflicts...
+              </div>
+            )}
+
+            {/* Main content (after preview loaded) */}
+            {!previewLoading && mergePreview && (
+              <div className="space-y-4 py-2">
+                {/* Deal name input */}
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-foreground">
+                    Deal name
+                  </label>
+                  <Input
+                    value={mergeName}
+                    onChange={(e) => setMergeName(e.target.value)}
+                    placeholder={targetDeal?.name}
+                    disabled={merging}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Leave as-is to keep the target deal's name, or type a new name.
+                  </p>
+                </div>
+
+                {/* Conflict resolution */}
+                {mergePreview.conflicts.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <div className="h-px flex-1 bg-border" />
+                      <span className="text-xs font-medium text-muted-foreground">
+                        {mergePreview.conflicts.length} document conflict{mergePreview.conflicts.length !== 1 ? "s" : ""}
+                      </span>
+                      <div className="h-px flex-1 bg-border" />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Both deals have documents of the same type. Choose which to keep — the other will be archived.
+                    </p>
+                    {mergePreview.conflicts.map((conflict) => {
+                      const keepId = resolutions[conflict.doc_type];
+                      return (
+                        <div key={conflict.doc_type} className="rounded-lg border border-border p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium text-foreground">{conflict.doc_type_label}</span>
+                            <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-500">
+                              conflict
+                            </span>
+                          </div>
+                          <p className="text-xs text-muted-foreground italic">{conflict.reason}</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            {/* Source doc option */}
+                            <button
+                              type="button"
+                              onClick={() => setResolutions((r) => ({ ...r, [conflict.doc_type]: conflict.source_doc.id }))}
+                              className={cn(
+                                "flex flex-col gap-1 rounded-md border p-2.5 text-left text-xs transition-all",
+                                keepId === conflict.source_doc.id
+                                  ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                                  : "border-border hover:border-muted-foreground/30"
+                              )}
+                              disabled={merging}
+                            >
+                              <div className="flex items-center gap-1.5">
+                                <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                <span className="font-medium text-foreground truncate">{conflict.source_doc.file_name}</span>
+                              </div>
+                              <span className="text-muted-foreground">
+                                {conflict.source_doc.date ?? "No date"} · Source
+                              </span>
+                              {conflict.source_doc.description && (
+                                <span className="text-muted-foreground/70 line-clamp-2">{conflict.source_doc.description}</span>
+                              )}
+                              {keepId === conflict.source_doc.id && (
+                                <span className="mt-0.5 inline-flex items-center gap-1 text-primary font-medium">
+                                  <Check className="h-3 w-3" /> Keep
+                                </span>
+                              )}
+                            </button>
+                            {/* Target doc option */}
+                            <button
+                              type="button"
+                              onClick={() => setResolutions((r) => ({ ...r, [conflict.doc_type]: conflict.target_doc.id }))}
+                              className={cn(
+                                "flex flex-col gap-1 rounded-md border p-2.5 text-left text-xs transition-all",
+                                keepId === conflict.target_doc.id
+                                  ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                                  : "border-border hover:border-muted-foreground/30"
+                              )}
+                              disabled={merging}
+                            >
+                              <div className="flex items-center gap-1.5">
+                                <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                <span className="font-medium text-foreground truncate">{conflict.target_doc.file_name}</span>
+                              </div>
+                              <span className="text-muted-foreground">
+                                {conflict.target_doc.date ?? "No date"} · Target
+                              </span>
+                              {conflict.target_doc.description && (
+                                <span className="text-muted-foreground/70 line-clamp-2">{conflict.target_doc.description}</span>
+                              )}
+                              {keepId === conflict.target_doc.id && (
+                                <span className="mt-0.5 inline-flex items-center gap-1 text-primary font-medium">
+                                  <Check className="h-3 w-3" /> Keep
+                                </span>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Summary */}
+                {mergePreview.conflicts.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    No document conflicts found. {mergePreview.documents_to_move} document(s) will be moved to the target deal.
+                  </p>
+                )}
+              </div>
+            )}
+
             <DialogFooter>
-              <Button variant="outline" onClick={() => setMergeOpen(false)} disabled={merging}>
+              <Button variant="outline" onClick={() => setMergeOpen(false)} disabled={merging || previewLoading}>
                 Cancel
               </Button>
-              <Button onClick={confirmMerge} disabled={merging}>
+              <Button onClick={confirmMerge} disabled={merging || previewLoading || !mergePreview}>
                 {merging ? "Merging…" : "Confirm merge"}
               </Button>
             </DialogFooter>

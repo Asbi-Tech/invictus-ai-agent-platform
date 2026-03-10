@@ -135,6 +135,42 @@ export interface OrgListItem {
   member_count: number;
 }
 
+// ── Merge preview types ───────────────────────────────────────────────────
+
+export interface MergeDocInfo {
+  id: number;
+  file_name: string;
+  date: string | null;
+  description: string | null;
+}
+
+export interface MergeDealInfo {
+  id: number;
+  name: string;
+  doc_count: number;
+}
+
+export interface MergeConflict {
+  doc_type: string;
+  doc_type_label: string;
+  source_doc: MergeDocInfo;
+  target_doc: MergeDocInfo;
+  recommendation: string; // "keep_source" | "keep_target"
+  reason: string;
+}
+
+export interface MergePreviewResponse {
+  source_deal: MergeDealInfo;
+  target_deal: MergeDealInfo;
+  conflicts: MergeConflict[];
+  documents_to_move: number;
+}
+
+export interface MergeResolution {
+  doc_type: string;
+  keep_doc_id: number;
+}
+
 export const api = {
   /** Redirect browser to Google OAuth */
   loginWithGoogle(): void {
@@ -210,7 +246,18 @@ export const api = {
     return apiFetch(`/documents/deals/${dealId}`, { method: "DELETE" });
   },
 
-  mergeDeals(sourceDealId: number, targetDealId: number, newName?: string): Promise<{
+  previewMerge(sourceDealId: number, targetDealId: number, newName?: string): Promise<MergePreviewResponse> {
+    return apiFetch("/documents/deals/merge/preview", {
+      method: "POST",
+      body: JSON.stringify({
+        source_deal_id: sourceDealId,
+        target_deal_id: targetDealId,
+        ...(newName ? { new_name: newName } : {}),
+      }),
+    });
+  },
+
+  mergeDeals(sourceDealId: number, targetDealId: number, newName?: string, resolutions?: MergeResolution[]): Promise<{
     target_deal_id: number;
     target_deal_name: string;
     source_deal_id: number;
@@ -223,6 +270,7 @@ export const api = {
         source_deal_id: sourceDealId,
         target_deal_id: targetDealId,
         ...(newName ? { new_name: newName } : {}),
+        ...(resolutions?.length ? { resolutions } : {}),
       }),
     });
   },
