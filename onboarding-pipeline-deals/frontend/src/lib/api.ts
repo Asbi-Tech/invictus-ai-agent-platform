@@ -171,6 +171,25 @@ export interface MergeResolution {
   keep_doc_id: number;
 }
 
+// ── Worker run types ─────────────────────────────────────────────────────
+
+export interface WorkerProgress {
+  run_id: number;
+  stage: string | null;
+  status: string; // pending | running | completed | failed | cancelled
+  data: Record<string, number>;
+}
+
+export interface WorkerRunHistory {
+  id: number;
+  status: string;
+  current_stage: string | null;
+  progress_data: Record<string, number> | null;
+  error_message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 export const api = {
   /** Redirect browser to Google OAuth */
   loginWithGoogle(): void {
@@ -207,8 +226,22 @@ export const api = {
     total_documents: number;
     processed_documents: number;
     pending_documents: number;
+    is_running: boolean;
+    active_run_id: number | null;
   }> {
     return apiFetch("/sync/status");
+  },
+
+  startPipelineRun(): Promise<{ run_id: number; status: string }> {
+    return apiFetch("/sync/run", { method: "POST" });
+  },
+
+  cancelPipelineRun(): Promise<{ cancelled: boolean }> {
+    return apiFetch("/sync/run/cancel", { method: "POST" });
+  },
+
+  getRunHistory(limit = 20): Promise<WorkerRunHistory[]> {
+    return apiFetch(`/sync/run/history?limit=${limit}`);
   },
 
   getLatestDocuments(): Promise<
