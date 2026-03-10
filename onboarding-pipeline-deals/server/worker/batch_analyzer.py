@@ -23,7 +23,41 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
+
+# ── Debug logging helpers ────────────────────────────────────────────────────
+
+_debug_run_dir: Optional[Path] = None
+_debug_chunk_counter = 0
+
+
+def _init_debug_dir() -> Optional[Path]:
+    """Create a timestamped run directory for debug output. Returns None if LLM_DEBUG is off."""
+    cfg = _cfg()
+    if not cfg.LLM_DEBUG:
+        return None
+    base = Path(__file__).resolve().parent / "logs" / "llm_debug"
+    run_dir = base / datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def _write_debug(run_dir: Optional[Path], chunk_idx: int, label: str, data: dict | list | str) -> None:
+    """Write a JSON debug file if debug mode is active."""
+    if run_dir is None:
+        return
+    fname = f"chunk_{chunk_idx:03d}_{label}.json"
+    path = run_dir / fname
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            if isinstance(data, str):
+                f.write(data)
+            else:
+                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+        logger.debug(f"LLM debug written: {path}")
+    except Exception as exc:
+        logger.warning(f"Failed to write debug file {path}: {exc}")
 
 from worker.prompts.batch_analysis import (
     BATCH_ANALYSIS_SYSTEM_PROMPT,
@@ -31,7 +65,7 @@ from worker.prompts.batch_analysis import (
     OUTPUT_SCHEMA,
 )
 
-VALID_TYPES = {"pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes", "other"}
+VALID_TYPES = {"pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes", "due_diligence_report", "other"}
 
 logger = logging.getLogger(__name__)
 
@@ -79,14 +113,42 @@ def analyze_batch(
         return [_fallback_result(item) for item in items]
 
     has_images = any(item.get("page_images") for item in items)
-    chunk_size = cfg.LLM_VISION_CHUNK_SIZE if has_images else cfg.LLM_CHUNK_SIZE
+    if has_images:
+        # Azure OpenAI enforces a 50-image-per-request limit.
+        # Dynamically size chunks so total images stay under the cap.
+        _MAX_IMAGES_PER_REQUEST = 5  # ≤ max pages/doc → guarantees 1 doc per chunk
+        total_images = sum(len(item.get("page_images", [])) for item in items)
+        avg_images = total_images / len(items) if items else 1
+        chunk_size = max(1, min(
+            cfg.LLM_VISION_CHUNK_SIZE,
+            int(_MAX_IMAGES_PER_REQUEST / max(avg_images, 1)),
+        ))
+        logger.info(
+            f"Vision batch: {total_images} images across {len(items)} docs "
+            f"(avg {avg_images:.1f}/doc) → chunk_size={chunk_size}"
+        )
+    else:
+        chunk_size = cfg.LLM_CHUNK_SIZE
     chunks = [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+    # Initialize debug directory for this run (None if LLM_DEBUG is off)
+    debug_dir = _init_debug_dir()
+    if debug_dir:
+        logger.info(f"LLM debug logging enabled → {debug_dir}")
+        # Write a run summary
+        _write_debug(debug_dir, 0, "run_summary", {
+            "total_docs": len(items),
+            "chunk_size": chunk_size,
+            "num_chunks": len(chunks),
+            "has_images": has_images,
+            "file_names": [item.get("file_name", "") for item in items],
+        })
 
     # Run all chunk calls in parallel — each is an independent HTTP request
     chunk_results_map: dict[int, list[AnalysisResult]] = {}
     with ThreadPoolExecutor(max_workers=min(len(chunks), 10)) as pool:
         futures = {
-            pool.submit(_analyze_chunk, chunk, custom_prompt): idx
+            pool.submit(_analyze_chunk, chunk, custom_prompt, idx, debug_dir): idx
             for idx, chunk in enumerate(chunks)
         }
         for future in as_completed(futures):
@@ -128,13 +190,52 @@ def _get_model_name() -> str:
     return cfg.OPENAI_MODEL
 
 
-def _analyze_chunk(chunk: list[dict], custom_prompt: Optional[str] = None) -> list[AnalysisResult]:
+def _analyze_chunk(
+    chunk: list[dict],
+    custom_prompt: Optional[str] = None,
+    chunk_idx: int = 0,
+    debug_dir: Optional[Path] = None,
+) -> list[AnalysisResult]:
     has_images = any(item.get("page_images") for item in chunk)
 
     if has_images:
         user_content = _build_multimodal_content(chunk, firm_context=custom_prompt)
     else:
         user_content = _build_prompt(chunk, firm_context=custom_prompt)
+
+    # ── Debug: write request payload ─────────────────────────────────────────
+    if debug_dir:
+        request_debug = {
+            "chunk_idx": chunk_idx,
+            "num_docs": len(chunk),
+            "has_images": has_images,
+            "files": [item.get("file_name", "") for item in chunk],
+            "model": _get_model_name(),
+            "max_completion_tokens": 600 * len(chunk),
+            "system_prompt": BATCH_ANALYSIS_SYSTEM_PROMPT,
+        }
+        if isinstance(user_content, str):
+            request_debug["user_content"] = user_content
+        else:
+            # Multimodal: write text parts fully, replace image data with placeholder
+            sanitized = []
+            for part in user_content:
+                if part.get("type") == "image_url":
+                    url = part.get("image_url", {}).get("url", "")
+                    sanitized.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"[base64 image, {len(url)} chars]",
+                            "detail": part.get("image_url", {}).get("detail", "low"),
+                        },
+                    })
+                else:
+                    sanitized.append(part)
+            request_debug["user_content_parts"] = sanitized
+            request_debug["total_images"] = sum(
+                1 for p in user_content if p.get("type") == "image_url"
+            )
+        _write_debug(debug_dir, chunk_idx, "request", request_debug)
 
     try:
         client = _get_llm_client()
@@ -147,10 +248,25 @@ def _analyze_chunk(chunk: list[dict], custom_prompt: Optional[str] = None) -> li
                 },
                 {"role": "user", "content": user_content},
             ],
+            temperature=0,
             response_format={"type": "json_object"},
-            max_completion_tokens=600 * len(chunk),  # ~600 tokens per doc result (includes JSON overhead + summaries)
+            max_completion_tokens=600 * len(chunk),
         )
         raw = response.choices[0].message.content or ""
+
+        # ── Debug: write response ────────────────────────────────────────────
+        if debug_dir:
+            _write_debug(debug_dir, chunk_idx, "response", {
+                "chunk_idx": chunk_idx,
+                "finish_reason": response.choices[0].finish_reason,
+                "usage": {
+                    "prompt_tokens": getattr(response.usage, "prompt_tokens", None),
+                    "completion_tokens": getattr(response.usage, "completion_tokens", None),
+                    "total_tokens": getattr(response.usage, "total_tokens", None),
+                },
+                "raw_content": raw,
+            })
+
         if not raw.strip():
             logger.error(
                 f"Empty content from LLM for chunk of {len(chunk)} — "
@@ -160,7 +276,66 @@ def _analyze_chunk(chunk: list[dict], custom_prompt: Optional[str] = None) -> li
         logger.debug(f"LLM raw response (first 200 chars): {raw[:200]}")
         return _parse_response(raw, chunk)
     except Exception as exc:
-        logger.error(f"Batch LLM call failed for chunk of {len(chunk)}: {exc}")
+        error_str = str(exc).lower()
+
+        # ── Debug: write error ───────────────────────────────────────────────
+        if debug_dir:
+            _write_debug(debug_dir, chunk_idx, "error", {
+                "chunk_idx": chunk_idx,
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            })
+
+        # Retry as text-only when images likely caused the failure:
+        # - image limit exceeded (too many images / max is 50)
+        # - Azure content filter false positive (document images + long prompt trigger jailbreak detection)
+        is_image_limit = "too many images" in error_str or "max is 50" in error_str
+        is_content_filter = "content_filter" in error_str or "content management policy" in error_str
+        if has_images and (is_image_limit or is_content_filter):
+            retry_reason = "content_filter" if is_content_filter else "image_limit_exceeded"
+            logger.warning(
+                f"{retry_reason} for chunk of {len(chunk)} — retrying text-only"
+            )
+            try:
+                text_content = _build_prompt(chunk, firm_context=custom_prompt)
+
+                if debug_dir:
+                    _write_debug(debug_dir, chunk_idx, "retry_request", {
+                        "chunk_idx": chunk_idx,
+                        "retry_reason": retry_reason,
+                        "user_content": text_content,
+                    })
+
+                response = client.chat.completions.create(
+                    model=_get_model_name(),
+                    messages=[
+                        {"role": "system", "content": BATCH_ANALYSIS_SYSTEM_PROMPT},
+                        {"role": "user", "content": text_content},
+                    ],
+                    temperature=0,
+                    response_format={"type": "json_object"},
+                    max_completion_tokens=600 * len(chunk),
+                )
+                raw = response.choices[0].message.content or ""
+
+                if debug_dir:
+                    _write_debug(debug_dir, chunk_idx, "retry_response", {
+                        "chunk_idx": chunk_idx,
+                        "finish_reason": response.choices[0].finish_reason,
+                        "raw_content": raw,
+                    })
+
+                if raw.strip():
+                    return _parse_response(raw, chunk)
+            except Exception as retry_exc:
+                logger.error(f"Text-only retry also failed: {retry_exc}")
+                if debug_dir:
+                    _write_debug(debug_dir, chunk_idx, "retry_error", {
+                        "chunk_idx": chunk_idx,
+                        "error": str(retry_exc),
+                    })
+        else:
+            logger.error(f"Batch LLM call failed for chunk of {len(chunk)}: {exc}")
         return [_fallback_result(item) for item in chunk]
 
 
@@ -215,13 +390,25 @@ Signals → `false` (new deal / opportunity being evaluated):
 - Prescreening or first-look of a company seeking capital
 - IC meeting minutes discussing *whether* to invest in a new company (formal committee session, not a call recap)
 - Data room materials from an external company seeking investment
+- Co-investment memos, secondary opportunity analyses, or deal evaluations
+
+IMPORTANT: Documents being EVALUATED for potential investment are always `false`, even if they mention:
+- "Co-investment", "secondary", or "co-invest" — these describe the opportunity structure, not existing ownership
+- A well-known company name — the question is whether THIS document represents evaluation or portfolio monitoring
+- Financial statements as part of due diligence — DD materials for a potential deal are `false`
+
+**Rule of thumb**: If the document type would be `pitch_deck`, `investment_memo`, `prescreening_report`, or `due_diligence_report`, then `is_client` should almost always be `false`.
 
 **When in doubt, default to `false`** (assume deal/opportunity).
 
 ### `deal_name`
-- Extract from **document content first** — folder path is supporting context only.
+- Use ALL available signals to determine the deal/company name:
+  1. **Document content** (strongest) — title pages, headers, company mentions
+  2. **File name** — often contains the company name (e.g. "Venus IM_v3.pdf" → "Venus", "Shared by ICG - Pitchdeck.pdf" → "ICG")
+  3. **Folder path** — the folder name often IS the deal name (e.g. [folder: ICG_TEST] → "ICG", [folder: QUALIA_TEST] → "Qualia")
+- For folder-derived names: strip common suffixes like _TEST, _VALIDATION, _DOCS, _FILES and clean underscores to spaces.
 - Return the shortest unambiguous name (max 3 words). Strip legal suffixes (Inc, Ltd, LLC, Corp).
-- Return `null` if the deal name cannot be determined with confidence.
+- You MUST return a deal_name if ANY signal provides one. Return `null` ONLY if no signal at all yields a name.
 
 ### `doc_date`
 - Find the date the document was **authored or published** — not dates referenced in the body.
@@ -302,7 +489,7 @@ This first look covers Zeta Energy, a clean energy startup seeking seed funding.
   "summary": "Initial prescreening assessment of Zeta Energy, a clean energy startup seeking seed investment. The report finds no major red flags and recommends scheduling a partner meeting."
 }}
 
-### Ex 5: Ambiguous doc — reasoning through type signals
+### Ex 5a: DD checklist — investment_memo, NOT due_diligence_report
 **Input excerpt**:
 Due Diligence Checklist - Gamma Fintech
 Corporate Documents: Certificate of incorporation, cap table, board consents...
@@ -316,7 +503,25 @@ Financial Information: Historical financials, budget, tax returns, debt schedule
   "doc_date": null,
   "summary": "Due diligence checklist for the Gamma Fintech transaction outlining required corporate and financial documentation. The document requests cap table, historical financials, IP portfolio, and legal compliance records by end of week."
 }}
-**Why**: Contains "due diligence", "cap table", "debt schedules" → matches [T3] investment_memo before reaching [T4].
+**Why**: This is a checklist of DD items to collect, NOT a due diligence report with findings/analysis. Checklists → `investment_memo`.
+
+### Ex 5b: FDD report — due_diligence_report
+**Input excerpt** [folder: VENUS_TEST]:
+--- xyz999: Project Venus - Final FDD Report - 22.01.25.pdf [folder: VENUS_TEST] ---
+Final Financial Due Diligence Report
+Transaction Services | 22 January 2025
+Prepared by Deloitte for Gulf Islamic Investments...
+Executive summary, business overview, key findings...
+
+**Output entry**:
+{{
+  "custom_id": "xyz999",
+  "doc_type": "due_diligence_report",
+  "deal_name": "Venus",
+  "doc_date": "2025-01-22",
+  "summary": "Final financial due diligence report for Project Venus prepared by Deloitte, reviewing Hotpack Holding and Investment Limited. The report covers executive summary, business overview, key findings, and appendices from a four-year historical review."
+}}
+**Why**: "Financial Due Diligence Report" by Deloitte — a formal DD report with findings and analysis, not a checklist. Matches [T3] `due_diligence_report`.
 
 ### Ex 6: Call notes — NOT meeting_minutes
 **Input excerpt**:
@@ -336,6 +541,41 @@ Next steps: Share data room access, follow-up call in two weeks.
   "summary": "Introductory call notes between GP David Park and Beta Health CEO Sarah Chen covering company overview and Series A fundraising. Next steps include data room access and a follow-up call in two weeks."
 }}
 **Why**: "Call Notes", "intro call", "next steps: follow-up call" — this is a call recap, not a formal IC decision session. Must be `other`, never `meeting_minutes`.
+
+### Ex 7: Generic filename — deal name from folder path
+**Input excerpt** [folder: ICG_TEST]:
+--- abc789: Delivrables - Investment Memorandum.pdf [folder: ICG_TEST] ---
+Executive Summary
+This memorandum presents the investment thesis and financial analysis...
+
+**Output entry**:
+{{
+  "custom_id": "abc789",
+  "doc_type": "investment_memo",
+  "deal_name": "ICG",
+  "doc_date": null,
+  "summary": "Investment memorandum presenting the thesis and financial analysis for ICG. The document covers key metrics, risk factors, and a recommendation for the investment committee."
+}}
+**Why**: The file name "Delivrables - Investment Memorandum.pdf" is generic, but the folder path `ICG_TEST` clearly identifies the deal. Strip `_TEST` suffix → "ICG".
+
+### Ex 8: Co-investment evaluation — NOT a client document
+**Input excerpt** [folder: QUALIA_VALIDATION]:
+--- def012: Qualia Co-Investment Secondary_2025-11-27.pdf [folder: QUALIA_VALIDATION] ---
+Pre-Screening Analysis Report
+Qualia Co-Investment Secondary
+Round Size: $200,000,000 | Pre Money Valuation: $960,000,000
+Executive Summary: This memorandum presents the investment thesis...
+
+**Output entry**:
+{{
+  "custom_id": "def012",
+  "is_client": false,
+  "doc_type": "prescreening_report",
+  "deal_name": "Qualia",
+  "doc_date": "2025-11-27",
+  "summary": "Pre-screening report evaluating a $200M co-investment secondary opportunity in Qualia at a $960M pre-money valuation. The analysis covers business overview, key financial metrics, and strategic fit."
+}}
+**Why**: Even though this mentions "Co-Investment", it is an EVALUATION document (pre-screening report with round size and valuation) for a potential investment. The fund has NOT yet invested — `is_client=false`.
 
 ---
 """
@@ -402,6 +642,12 @@ def _parse_response(raw: str, chunk: list[dict]) -> list[AnalysisResult]:
     except (json.JSONDecodeError, ValueError) as exc:
         logger.error(f"Failed to parse LLM JSON response: {exc}\nRaw: {raw[:500]}")
         return [_fallback_result(item) for item in chunk]
+
+    if len(entries) < len(chunk):
+        logger.warning(
+            f"LLM returned {len(entries)} results for {len(chunk)} docs — "
+            f"{len(chunk) - len(entries)} doc(s) will use heuristic fallback"
+        )
 
     # Build lookup by custom_id, fall back to positional if id is missing
     by_id: dict[str, dict] = {}
@@ -482,9 +728,27 @@ def _parse_date(raw: Optional[str]) -> Optional[datetime]:
     return None
 
 
+def _infer_type_from_filename(name: str) -> str:
+    """Best-effort doc_type from filename keywords when LLM is unavailable."""
+    lower = name.lower()
+    if any(kw in lower for kw in ("memo", "im_", "investment memo")):
+        return "investment_memo"
+    if any(kw in lower for kw in ("pre-screen", "prescreen", "screening")):
+        return "prescreening_report"
+    if any(kw in lower for kw in ("minutes", "ic meeting", "ic_meeting")):
+        return "meeting_minutes"
+    if any(kw in lower for kw in ("pitch", "deck", "presentation", "overview", "teaser")):
+        return "pitch_deck"
+    return _FALLBACK_TYPE
+
+
 def _fallback_result(item: dict) -> AnalysisResult:
+    from worker.deal_resolver import extract_deal_from_folder_path
+
+    folder_deal = extract_deal_from_folder_path(item.get("folder_path", ""))
     return AnalysisResult(
         custom_id=item["custom_id"],
-        doc_type=_FALLBACK_TYPE,
+        doc_type=_infer_type_from_filename(item.get("file_name", "")),
+        deal_name=folder_deal or None,
         from_heuristic=True,
     )

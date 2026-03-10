@@ -3,5 +3,6 @@ from .user import User
 from .document import Document
 from .deal import Deal
 from .deal_field import DealField
+from .worker_run import WorkerRun
 
-__all__ = ["Organization", "User", "Document", "Deal", "DealField"]
+__all__ = ["Organization", "User", "Document", "Deal", "DealField", "WorkerRun"]

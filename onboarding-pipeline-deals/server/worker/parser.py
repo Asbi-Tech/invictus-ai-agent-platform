@@ -26,7 +26,7 @@ def _is_ole_encrypted(content: bytes) -> bool:
     return content[:8] == _OLE_MAGIC
 
 
-def extract_page_images(content: bytes, file_name: str, max_pages: int = 2) -> list[str]:
+def extract_page_images(content: bytes, file_name: str, max_pages: int = 5) -> list[str]:
     """
     Render first N pages of a PDF as PNG images, returned as base64-encoded strings.
     Returns empty list for non-PDF formats or on failure.

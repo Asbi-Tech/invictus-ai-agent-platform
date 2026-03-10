@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { api, DealResponse, DealDocSlot, ArchivedDoc, LockedFileDoc, DealFieldResponse } from "@/lib/api";
+import { api, DealResponse, DealDocSlot, DealDocSlots, ArchivedDoc, LockedFileDoc, DealFieldResponse } from "@/lib/api";
 import Navbar from "@/components/Navbar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,18 +11,44 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ArrowLeft, ExternalLink, FileText, FileType, File, ChevronDown, Lock, Pencil, Check, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ExternalLink, FileText, FileType, File, ChevronDown, Lock, Pencil, Check, X, Plus, MoreVertical, Trash2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 
 const TYPE_LABELS: Record<string, string> = {
   pitch_deck: "Pitch Deck",
   investment_memo: "Investment Memo",
   prescreening_report: "Prescreening Report",
   meeting_minutes: "Meeting Minutes",
+  due_diligence_report: "Due Diligence Report",
 };
 
-const DOC_TYPES = ["pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes"] as const;
+const DOC_TYPES = ["pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes", "due_diligence_report"] as const;
 
 function driveUrl(fileId: string) {
   return `https://drive.google.com/file/d/${fileId}/view`;
@@ -54,28 +80,34 @@ function getIconBg(name: string) {
   return "bg-muted text-muted-foreground";
 }
 
-function DocSlotCard({ doc, label }: { doc: DealDocSlot; label: string }) {
+function DocSlotCard({ doc, label, onReplace }: { doc: DealDocSlot; label: string; onReplace: () => void }) {
   return (
-    <a
-      href={driveUrl(doc.file_id)}
-      target="_blank"
-      rel="noreferrer"
-      className="group flex flex-col gap-3 rounded-xl border border-border bg-card p-5 transition-all duration-150 hover:border-primary/40 hover:shadow-md"
-    >
+    <div className="group relative flex flex-col gap-3 rounded-xl border border-border bg-card p-5 transition-all duration-150 hover:border-primary/40 hover:shadow-md">
       <div className="flex items-start justify-between gap-2">
         <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${getIconBg(doc.name)}`}>
           {getFileIcon(doc.name)}
         </div>
-        <ExternalLink className="h-4 w-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onReplace}
+            className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100"
+            title="Replace document"
+          >
+            <ArrowLeftRight className="h-3.5 w-3.5" />
+          </button>
+          <a href={driveUrl(doc.file_id)} target="_blank" rel="noreferrer" className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100" title="Open in Drive">
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
       </div>
-      <div>
+      <a href={driveUrl(doc.file_id)} target="_blank" rel="noreferrer" className="flex flex-col gap-1">
         <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-        <p className="mt-1 line-clamp-2 text-sm font-medium text-foreground">{formatName(doc.name)}</p>
+        <p className="line-clamp-2 text-sm font-medium text-foreground">{formatName(doc.name)}</p>
         {doc.description && (
           <TooltipProvider delayDuration={300}>
             <Tooltip>
               <TooltipTrigger asChild>
-                <p className="mt-1 line-clamp-2 text-xs text-muted-foreground cursor-default">
+                <p className="line-clamp-2 text-xs text-muted-foreground cursor-default">
                   {doc.description}
                 </p>
               </TooltipTrigger>
@@ -88,17 +120,28 @@ function DocSlotCard({ doc, label }: { doc: DealDocSlot; label: string }) {
             </Tooltip>
           </TooltipProvider>
         )}
-      </div>
+      </a>
       <p className="text-xs text-muted-foreground">{formatDate(doc.date)}</p>
-    </a>
+    </div>
   );
 }
 
-function EmptySlotCard({ label }: { label: string }) {
+function EmptySlotCard({ label, hasArchived, onFill }: { label: string; hasArchived: boolean; onFill: () => void }) {
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-dashed border-border p-5 opacity-50">
-      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-        <File className="h-6 w-6 text-muted-foreground" />
+    <div className="group flex flex-col gap-3 rounded-xl border border-dashed border-border p-5 opacity-50 hover:opacity-70 transition-opacity">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+          <File className="h-6 w-6 text-muted-foreground" />
+        </div>
+        {hasArchived && (
+          <button
+            onClick={onFill}
+            className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100"
+            title="Fill from archive"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
       <div>
         <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
@@ -116,6 +159,10 @@ const DealDetail = () => {
   const [fetching, setFetching] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveFilter, setArchiveFilter] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [replaceSlot, setReplaceSlot] = useState<string | null>(null);
+  const [replacing, setReplacing] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !user) navigate("/", { replace: true });
@@ -159,10 +206,186 @@ const DealDetail = () => {
 
         {!fetching && deal && (
           <>
-            <h1 className="font-heading text-3xl font-semibold text-foreground">{deal.name}</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {deal.doc_count} of 4 document{deal.doc_count !== 1 ? "s" : ""} available
-            </p>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h1 className="font-heading text-3xl font-semibold text-foreground">{deal.name}</h1>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {deal.doc_count} of {DOC_TYPES.length} document{deal.doc_count !== 1 ? "s" : ""} available
+                </p>
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="mt-1 flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+                    <MoreVertical className="h-4 w-4" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    className="text-red-400 focus:text-red-400"
+                    onClick={() => setDeleteOpen(true)}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete deal
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            {/* Delete confirmation */}
+            <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete "{deal.name}"?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will remove the deal and unlink all its documents. The documents will remain in the system and may be re-grouped on the next processing run. This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+                    disabled={deleting}
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      setDeleting(true);
+                      try {
+                        const res = await api.deleteDeal(deal.id);
+                        toast.success(`Deleted "${res.deal_name}" — ${res.documents_unlinked} document(s) unlinked`);
+                        navigate("/documents", { replace: true });
+                      } catch (err: unknown) {
+                        toast.error(err instanceof Error ? err.message : "Failed to delete deal");
+                        setDeleting(false);
+                      }
+                    }}
+                  >
+                    {deleting ? "Deleting…" : "Delete"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Replace document dialog */}
+            <Dialog open={replaceSlot !== null} onOpenChange={(open) => { if (!open && !replacing) setReplaceSlot(null); }}>
+              <DialogContent className="sm:max-w-lg">
+                <DialogHeader>
+                  <DialogTitle>
+                    {deal.documents[replaceSlot as keyof DealDocSlots] ? "Replace" : "Fill"} {TYPE_LABELS[replaceSlot ?? ""] ?? ""}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {deal.documents[replaceSlot as keyof DealDocSlots]
+                      ? "Choose a document to place in this slot. The current document will be archived."
+                      : "Choose a document to place in this empty slot."}
+                  </DialogDescription>
+                </DialogHeader>
+                {replaceSlot && (() => {
+                  const currentDocId = deal.documents[replaceSlot as keyof DealDocSlots]?.id ?? null;
+                  // Archived docs — same type first, then others
+                  const sameTypeArchived = deal.archived.filter((d) => d.type === replaceSlot);
+                  const otherTypeArchived = deal.archived.filter((d) => d.type !== replaceSlot);
+                  const archivedCandidates = [...sameTypeArchived, ...otherTypeArchived];
+                  // Docs from other filled slots (for swapping)
+                  const swapCandidates = DOC_TYPES
+                    .filter((t) => t !== replaceSlot && deal.documents[t] != null)
+                    .map((t) => ({ slotType: t, doc: deal.documents[t]! }));
+
+                  const hasCandidates = archivedCandidates.length > 0 || swapCandidates.length > 0;
+
+                  async function handleSelect(docId: number) {
+                    if (!replaceSlot || replacing) return;
+                    setReplacing(true);
+                    try {
+                      const updated = await api.replaceSlotDocument(deal.id, replaceSlot, docId);
+                      setDeal(updated);
+                      setReplaceSlot(null);
+                      toast.success("Document replaced successfully");
+                    } catch (err: unknown) {
+                      toast.error(err instanceof Error ? err.message : "Failed to replace document");
+                    } finally {
+                      setReplacing(false);
+                    }
+                  }
+
+                  return (
+                    <div className="max-h-80 overflow-y-auto -mx-1 px-1">
+                      {!hasCandidates && (
+                        <p className="py-8 text-center text-sm text-muted-foreground">
+                          No documents available to place in this slot.
+                        </p>
+                      )}
+
+                      {archivedCandidates.length > 0 && (
+                        <div className="mb-3">
+                          <p className="mb-1.5 text-xs font-medium text-muted-foreground">Archived documents</p>
+                          <div className="rounded-lg border border-border divide-y divide-border">
+                            {archivedCandidates.map((doc) => (
+                              <button
+                                key={doc.id}
+                                onClick={() => handleSelect(doc.id)}
+                                disabled={replacing}
+                                className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted/50 disabled:opacity-50"
+                              >
+                                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${getIconBg(doc.name)}`}>
+                                  {getFileIcon(doc.name)}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-sm font-medium text-foreground">{formatName(doc.name)}</p>
+                                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                    <span>{formatDate(doc.date)}</span>
+                                    {doc.type !== replaceSlot && (
+                                      <span className="text-amber-400">will be reclassified</span>
+                                    )}
+                                  </div>
+                                </div>
+                                <Badge variant="outline" className="shrink-0 border-muted text-[10px] text-muted-foreground">
+                                  {TYPE_LABELS[doc.type] ?? doc.type}
+                                </Badge>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {swapCandidates.length > 0 && (
+                        <div>
+                          <p className="mb-1.5 text-xs font-medium text-muted-foreground">Swap with another slot</p>
+                          <div className="rounded-lg border border-border divide-y divide-border">
+                            {swapCandidates.map(({ slotType, doc }) => (
+                              <button
+                                key={doc.id}
+                                onClick={() => handleSelect(doc.id)}
+                                disabled={replacing}
+                                className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted/50 disabled:opacity-50"
+                              >
+                                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${getIconBg(doc.name)}`}>
+                                  {getFileIcon(doc.name)}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-sm font-medium text-foreground">{formatName(doc.name)}</p>
+                                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                    <span>{formatDate(doc.date)}</span>
+                                    <span className="text-blue-400">will swap types</span>
+                                  </div>
+                                </div>
+                                <Badge variant="outline" className="shrink-0 border-muted text-[10px] text-muted-foreground">
+                                  {TYPE_LABELS[slotType]}
+                                </Badge>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {replacing && (
+                        <div className="flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Replacing...
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </DialogContent>
+            </Dialog>
 
             {/* Analysis metadata */}
             <div className="mt-5 flex flex-wrap items-center gap-3">
@@ -251,9 +474,14 @@ const DealDetail = () => {
               {DOC_TYPES.map((type) => {
                 const doc = deal.documents[type];
                 return doc ? (
-                  <DocSlotCard key={type} doc={doc} label={TYPE_LABELS[type]} />
+                  <DocSlotCard key={type} doc={doc} label={TYPE_LABELS[type]} onReplace={() => setReplaceSlot(type)} />
                 ) : (
-                  <EmptySlotCard key={type} label={TYPE_LABELS[type]} />
+                  <EmptySlotCard
+                    key={type}
+                    label={TYPE_LABELS[type]}
+                    hasArchived={deal.archived.length > 0 || DOC_TYPES.some((t) => t !== type && deal.documents[t] != null)}
+                    onFill={() => setReplaceSlot(type)}
+                  />
                 );
               })}
             </div>

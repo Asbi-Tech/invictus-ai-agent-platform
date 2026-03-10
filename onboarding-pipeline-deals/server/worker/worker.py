@@ -25,7 +25,9 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 import time as _time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional
@@ -64,33 +66,49 @@ from worker.drive_ingestion import (
 )
 from worker.parser import extract_text, extract_page_images, PasswordProtectedError
 from worker.batch_analyzer import analyze_batch, AnalysisResult
-from worker.deal_resolver import get_or_create_deal
+from worker.deal_resolver import get_or_create_deal, extract_deal_from_folder_path
 from worker.vectorizer import ingest_and_analyze_deal, rerun_analytical_and_fields
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 _LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s – %(message)s"
-_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-os.makedirs(_LOG_DIR, exist_ok=True)
-
-import datetime as _dt
-_run_ts = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-_log_file = os.path.join(_LOG_DIR, f"worker_{_run_ts}.log")
-
-_root = logging.getLogger()
-_root.setLevel(logging.INFO)
-
-_fmt = logging.Formatter(_LOG_FORMAT)
-
-_sh = logging.StreamHandler()
-_sh.setFormatter(_fmt)
-_root.addHandler(_sh)
-
-_fh = logging.FileHandler(_log_file, encoding="utf-8")
-_fh.setFormatter(_fmt)
-_root.addHandler(_fh)
 
 logger = logging.getLogger("worker")
-logger.info(f"Logging to {_log_file}")
+
+_standalone_logging_initialized = False
+
+
+def _setup_standalone_logging() -> None:
+    """Configure file + console logging for standalone (CLI/cron) execution.
+
+    Called only from run() and __main__ — NOT at module import time so that
+    FastAPI can import worker functions without side effects.
+    """
+    global _standalone_logging_initialized
+    if _standalone_logging_initialized:
+        return
+    _standalone_logging_initialized = True
+
+    import datetime as _dt
+
+    _LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    os.makedirs(_LOG_DIR, exist_ok=True)
+    _run_ts = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    _log_file = os.path.join(_LOG_DIR, f"worker_{_run_ts}.log")
+
+    _root = logging.getLogger()
+    _root.setLevel(logging.INFO)
+
+    _fmt = logging.Formatter(_LOG_FORMAT)
+
+    _sh = logging.StreamHandler()
+    _sh.setFormatter(_fmt)
+    _root.addHandler(_sh)
+
+    _fh = logging.FileHandler(_log_file, encoding="utf-8")
+    _fh.setFormatter(_fmt)
+    _root.addHandler(_fh)
+
+    logger.info(f"Logging to {_log_file}")
 
 # ── Per-org run statistics ────────────────────────────────────────────────────
 
@@ -121,6 +139,17 @@ class _OrgTimeoutError(Exception):
     pass
 
 
+class CancelledError(Exception):
+    """Raised when a UI-triggered run is cancelled."""
+    pass
+
+
+def _check_cancel(cancel_event: threading.Event | None, org_id: int, phase: str) -> None:
+    """Raise CancelledError if the cancel event is set."""
+    if cancel_event is not None and cancel_event.is_set():
+        raise CancelledError(f"Run cancelled for org {org_id} during {phase}")
+
+
 def _check_deadline(deadline: float, org_id: int, phase: str) -> None:
     """Raise _OrgTimeoutError if the deadline has passed."""
     if _time.monotonic() > deadline:
@@ -140,14 +169,18 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
       Pass A (deal-scoped)   — docs with deal_id: group by (org_id, doc_type, deal_id).
       Pass B (folder-scoped) — docs without deal_id: group by (org_id, doc_type, folder_path).
 
-    Both passes require doc_created_date to determine which is newer.
+    Both passes use doc_created_date (falling back to drive_created_time) to
+    determine which document is newer.
     """
-    # Split into two buckets
+
+    def _effective_date(doc):
+        """Return the best available date for ordering: doc_created_date or drive_created_time."""
+        return doc.doc_created_date or doc.drive_created_time
+
+    # Split into two buckets (include dateless docs — they lose to any dated doc)
     deal_docs: list = []
     folder_docs: list = []
     for doc in processed_docs:
-        if not doc.doc_created_date:
-            continue
         if doc.deal_id:
             deal_docs.append(doc)
         elif doc.folder_path:
@@ -162,8 +195,13 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
         a_groups.setdefault(key, []).append(doc)
 
     for (org_id, doc_type, deal_id), docs in a_groups.items():
-        newest = max(docs, key=lambda d: d.doc_created_date)
+        dated = [d for d in docs if _effective_date(d)]
+        if not dated:
+            continue  # all dateless — no way to rank, keep all current
+        newest = max(dated, key=lambda d: _effective_date(d))
+        newest_date = _effective_date(newest)
         exclude_ids = [d.id for d in docs]
+        # Supersede pre-existing DB docs: older dated OR dateless (dateless always lose)
         n = (
             db.query(Document)
             .filter(
@@ -171,12 +209,33 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
                 Document.doc_type == doc_type,
                 Document.deal_id == deal_id,
                 Document.id.notin_(exclude_ids),
-                Document.doc_created_date < newest.doc_created_date,
+                sqlalchemy.or_(
+                    sqlalchemy.and_(
+                        Document.doc_created_date.isnot(None),
+                        Document.doc_created_date < newest_date,
+                    ),
+                    sqlalchemy.and_(
+                        Document.doc_created_date.is_(None),
+                        Document.drive_created_time.isnot(None),
+                        Document.drive_created_time < newest_date,
+                    ),
+                    sqlalchemy.and_(
+                        Document.doc_created_date.is_(None),
+                        Document.drive_created_time.is_(None),
+                    ),
+                ),
                 Document.version_status == "current",
             )
             .update({"version_status": "superseded"}, synchronize_session="fetch")
         )
         total_superseded += n
+
+        # Supersede same-batch losers directly (exclude_ids kept them out of the query)
+        if len(docs) > 1:
+            for doc in docs:
+                if doc.id != newest.id and doc.version_status == "current":
+                    doc.version_status = "superseded"
+                    total_superseded += 1
 
     # Pass B: folder-scoped — group by (org_id, doc_type, folder_path)
     b_groups: dict[tuple, list] = {}
@@ -185,7 +244,11 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
         b_groups.setdefault(key, []).append(doc)
 
     for (org_id, doc_type, folder_path), docs in b_groups.items():
-        newest = max(docs, key=lambda d: d.doc_created_date)
+        dated = [d for d in docs if _effective_date(d)]
+        if not dated:
+            continue  # all dateless — no way to rank, keep all current
+        newest = max(dated, key=lambda d: _effective_date(d))
+        newest_date = _effective_date(newest)
         exclude_ids = [d.id for d in docs]
         n = (
             db.query(Document)
@@ -195,12 +258,34 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
                 Document.deal_id.is_(None),
                 Document.folder_path == folder_path,
                 Document.id.notin_(exclude_ids),
-                Document.doc_created_date < newest.doc_created_date,
+                sqlalchemy.or_(
+                    sqlalchemy.and_(
+                        Document.doc_created_date.isnot(None),
+                        Document.doc_created_date < newest_date,
+                    ),
+                    sqlalchemy.and_(
+                        Document.doc_created_date.is_(None),
+                        Document.drive_created_time.isnot(None),
+                        Document.drive_created_time < newest_date,
+                    ),
+                    # Dateless docs are always older than any dated doc
+                    sqlalchemy.and_(
+                        Document.doc_created_date.is_(None),
+                        Document.drive_created_time.is_(None),
+                    ),
+                ),
                 Document.version_status == "current",
             )
             .update({"version_status": "superseded"}, synchronize_session="fetch")
         )
         total_superseded += n
+
+        # Supersede same-batch losers directly (exclude_ids kept them out of the query)
+        if len(docs) > 1:
+            for doc in docs:
+                if doc.id != newest.id and doc.version_status == "current":
+                    doc.version_status = "superseded"
+                    total_superseded += 1
 
     if total_superseded:
         db.commit()
@@ -210,7 +295,13 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
 
 # ── Per-org pipeline ──────────────────────────────────────────────────────────
 
-def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
+def process_organization(
+    db,
+    org: Organization,
+    users: list[User],
+    progress_callback: Callable[[str, dict], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> _RunStats:
     """
     Run the full ingestion pipeline for an organization.
 
@@ -224,12 +315,23 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
 
     Enforces per-org classification and vectorization quotas.
 
+    Args:
+        progress_callback: Optional callback(stage, data_dict) for reporting
+            progress to the UI (used by WorkerRunManager).
+        cancel_event: Optional threading.Event; if set, the pipeline aborts
+            gracefully at the next stage boundary.
+
     Returns a _RunStats with per-org counters for the final summary.
     """
     stats = _RunStats(org_id=org.id)
     _t0 = _time.monotonic()
     deadline = _t0 + cfg.ORG_PROCESSING_TIMEOUT_HOURS * 3600
     logger.info(f"── Starting pipeline for org {org.id} ({org.name!r}) with {len(users)} user(s)")
+
+    # ── Progress: discovering files ──────────────────────────────────────────
+    if progress_callback:
+        progress_callback("discovering_files", {})
+    _check_cancel(cancel_event, org.id, "discovering_files")
 
     # ── Collect files from all users' Drive folders, dedup at org level ────────
     all_new_files: list[dict] = []
@@ -277,6 +379,12 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
 
     new_files = all_new_files
     stats.new_files_found = len(new_files)
+
+    # ── Progress: downloading ────────────────────────────────────────────────
+    if progress_callback:
+        progress_callback("downloading", {"files_found": stats.new_files_found})
+    _check_cancel(cancel_event, org.id, "downloading")
+
     # Accumulate summaries across batches; applied only to current-slot docs
     # after supersede step to avoid summarizing archived/skipped files.
     summary_cache: dict[str, str] = {}
@@ -331,7 +439,7 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
                 logger.error(f"Skipping '{file_name}' – text extraction failed: {exc}")
                 return None
 
-            page_images = extract_page_images(content, file_name, max_pages=2)
+            page_images = extract_page_images(content, file_name)
 
             return {
                 "file_meta": file_meta,
@@ -359,6 +467,15 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
 
         if not prepared:
             continue
+
+        # ── Progress: analyzing ──────────────────────────────────────────────
+        if progress_callback:
+            progress_callback("analyzing", {
+                "files_found": stats.new_files_found,
+                "downloaded": stats.downloaded,
+                "download_failed": stats.download_failed,
+            })
+        _check_cancel(cancel_event, org.id, "analyzing")
 
         # ── Step 2: Batch LLM analysis ───────────────────────────────────────
         llm_results: dict[str, AnalysisResult] = {}
@@ -388,6 +505,15 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
         )
         if heuristic_count == len(analysis):
             logger.warning(f"Org {org.id}: ALL results are fallback — LLM batch likely failed entirely")
+
+        # ── Progress: persisting ─────────────────────────────────────────────
+        if progress_callback:
+            progress_callback("persisting", {
+                "files_found": stats.new_files_found,
+                "downloaded": stats.downloaded,
+                "analyzed": len(llm_results),
+            })
+        _check_cancel(cancel_event, org.id, "persisting")
 
         # ── Reconnect DB after potentially long LLM batch ─────────────────────
         # The LLM call can take minutes; Railway's Postgres proxy may drop the
@@ -488,9 +614,10 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
                     final_status = "processed"
                     final_type = doc_type
                     deal_id = None
-                    if raw_deal_name:
+                    deal_name = raw_deal_name or extract_deal_from_folder_path(folder_path)
+                    if deal_name:
                         deal = get_or_create_deal(
-                            db, org.id, raw_deal_name, existing_deals, user_id=file_user_id
+                            db, org.id, deal_name, existing_deals, user_id=file_user_id
                         )
                         deal_id = deal.id if deal else None
 
@@ -539,6 +666,17 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
         )
         # Release batch content bytes — text_cache already holds what we need
         prepared.clear()
+
+    # ── Progress: version management ───────────────────────────────────────
+    if progress_callback:
+        progress_callback("version_management", {
+            "files_found": stats.new_files_found,
+            "downloaded": stats.downloaded,
+            "persisted": stats.persisted,
+            "skipped_client": stats.skipped_client,
+            "skipped_other": stats.skipped_other,
+        })
+    _check_cancel(cancel_event, org.id, "version_management")
 
     # ── Step 4: Version management (once, after all batches) ─────────────────
     # Running after all docs are persisted is more correct: the full date
@@ -617,6 +755,7 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
 
     # ── Step 5: Vectorize + analyze per deal (requires VECTORIZER_INGEST_URL) ────
     _check_deadline(deadline, org.id, "pre-vectorization")
+    _check_cancel(cancel_event, org.id, "pre-vectorization")
     if not cfg.VECTORIZER_INGEST_URL:
         logger.info(
             f"Org {org.id}: VECTORIZER_INGEST_URL not configured — skipping vectorization"
@@ -686,6 +825,17 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
         f"{dealless_count} dealless doc(s) skipped)"
     )
 
+    # ── Progress: vectorizing ────────────────────────────────────────────────
+    if progress_callback:
+        progress_callback("vectorizing", {
+            "files_found": stats.new_files_found,
+            "downloaded": stats.downloaded,
+            "persisted": stats.persisted,
+            "superseded": stats.superseded,
+            "deals_to_vectorize": len(per_deal_docs),
+        })
+    _check_cancel(cancel_event, org.id, "vectorizing")
+
     # Pick a user with Drive credentials for the vectorizer (uses first available)
     vec_user_id = users[0].id
     for u in users:
@@ -707,6 +857,7 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="vec") as pool:
         for uid, did, doc_ids in deal_tasks:
             _check_deadline(deadline, org.id, f"vectorization deal {did}")
+            _check_cancel(cancel_event, org.id, f"vectorization deal {did}")
             future = pool.submit(_vectorize_deal_isolated, uid, did, doc_ids)
             try:
                 future.result()  # block until this deal finishes
@@ -722,7 +873,11 @@ def process_organization(db, org: Organization, users: list[User]) -> _RunStats:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def _process_org_isolated(org_id: int) -> Optional[_RunStats]:
+def _process_org_isolated(
+    org_id: int,
+    progress_callback: Callable[[str, dict], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> Optional[_RunStats]:
     """Process a single organization in an isolated DB session (safe for threads)."""
     db = SessionLocal()
     try:
@@ -744,7 +899,11 @@ def _process_org_isolated(org_id: int) -> Optional[_RunStats]:
         if not org_users:
             logger.info(f"Org {org_id} ({org.name!r}): no users with Drive connected — skipping")
             return None
-        return process_organization(db, org, org_users)
+        return process_organization(
+            db, org, org_users,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        )
     except _OrgTimeoutError as exc:
         logger.warning(
             f"Org {org_id} TIMED OUT after {cfg.ORG_PROCESSING_TIMEOUT_HOURS}h: {exc}"
@@ -832,6 +991,7 @@ def _vectorize_deal_isolated(user_id: int, deal_id: int, doc_ids: list[int]) -> 
 
 def run() -> None:
     """Main worker loop: process all users in parallel (one thread each, max 5)."""
+    _setup_standalone_logging()
     _lock_path = os.path.join(tempfile.gettempdir(), "invictus_deals_onboarding_worker.lock")
     lock_file = open(_lock_path, "w")
     try:
@@ -950,6 +1110,7 @@ def run_vectorizer_only() -> None:
       Case C — investment_type set but deal_fields table empty
                 → Stage 7 (ExtractFields) only
     """
+    _setup_standalone_logging()
     logger.info("═══ Vectorizer-only run started ═══")
     db = SessionLocal()
     try:

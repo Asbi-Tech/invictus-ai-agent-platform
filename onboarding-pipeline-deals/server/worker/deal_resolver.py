@@ -68,6 +68,12 @@ _SUFFIX_RE = re.compile(
 # Characters to strip when building the lookup key
 _NON_ALNUM = re.compile(r"[^a-z0-9]")
 
+# Common folder suffixes to strip before treating segment as a deal name
+_FOLDER_SUFFIX_RE = re.compile(
+    r"[_\s-]*(TEST|VALIDATION|DOCS|FILES|DATA|DOCUMENTS|FOLDER)\s*$",
+    re.IGNORECASE,
+)
+
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
@@ -79,15 +85,23 @@ def extract_deal_from_folder_path(folder_path: Optional[str]) -> Optional[str]:
     Strategy: walk segments from left to right; return the first non-generic one.
     This means "Portfolio/Acme Corp/Q1 2025" → "Acme Corp" (Portfolio is generic,
     Q1 2025 is generic, Acme Corp is the meaningful middle segment).
+
+    Common folder suffixes like _TEST, _VALIDATION, _DOCS are stripped so that
+    "ICG_TEST" → "ICG" and "QUALIA_VALIDATION" → "Qualia".
     """
     if not folder_path:
         return None
 
     segments = [s.strip() for s in folder_path.split("/") if s.strip()]
     for segment in segments:
-        key = _normalize_key(segment)
+        # Strip common folder suffixes before checking
+        cleaned = _FOLDER_SUFFIX_RE.sub("", segment).strip()
+        cleaned = cleaned.replace("_", " ").strip()
+        if not cleaned:
+            continue
+        key = _normalize_key(cleaned)
         if key and key not in _GENERIC and not key.isdigit() and len(key) >= 2:
-            return segment.title()
+            return normalize_deal_name(cleaned)
     return None
 
 
@@ -111,11 +125,12 @@ def _fuzzy_find_deal(existing_deals: list, key: str, raw_name: str):
     Accepts a pre-fetched list so the caller can load deals once and reuse
     across many documents, avoiding O(N×M) DB queries.
 
-    Uses token_set_ratio which handles word reordering and subset matches:
-      "Acme"          vs "Acme Robotics"   → ~89  ✓ match
-      "Beta Health"   vs "Beta"            → ~86  ✓ match
-      "Acme Robotics" vs "Acme Inc"        → ~80  ✓ match (above threshold)
-      "Acme"          vs "Zeta Energy"     → ~22  ✗ no match
+    Uses token_set_ratio on space-preserving names (not smooshed keys) so
+    that word-boundary matching works correctly:
+      "ICG"           vs "ICG Strategic Equity" → 100  ✓ match
+      "Acme"          vs "Acme Robotics"        → ~89  ✓ match
+      "Beta Health"   vs "Beta"                 → ~86  ✓ match
+      "Acme"          vs "Zeta Energy"          → ~22  ✗ no match
     """
     if not _RAPIDFUZZ_AVAILABLE or not existing_deals:
         return None
@@ -123,8 +138,14 @@ def _fuzzy_find_deal(existing_deals: list, key: str, raw_name: str):
     best_deal = None
     best_score = 0
 
+    # Compare space-preserving lowercase names so token_set_ratio can split
+    # on word boundaries (smooshed name_keys like "icgstrategicequity" break
+    # token-based matching).
+    query = _SUFFIX_RE.sub("", raw_name.lower()).strip()
+
     for deal in existing_deals:
-        score = _fuzz.token_set_ratio(key, deal.name_key)
+        compare = _SUFFIX_RE.sub("", deal.name.lower()).strip()
+        score = _fuzz.token_set_ratio(query, compare)
         if score > best_score:
             best_score = score
             best_deal = deal

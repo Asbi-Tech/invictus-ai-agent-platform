@@ -39,6 +39,7 @@ export interface DealDocSlots {
   investment_memo: DealDocSlot | null;
   prescreening_report: DealDocSlot | null;
   meeting_minutes: DealDocSlot | null;
+  due_diligence_report: DealDocSlot | null;
 }
 
 export interface ArchivedDoc {
@@ -135,6 +136,61 @@ export interface OrgListItem {
   member_count: number;
 }
 
+// ── Merge preview types ───────────────────────────────────────────────────
+
+export interface MergeDocInfo {
+  id: number;
+  file_name: string;
+  date: string | null;
+  description: string | null;
+}
+
+export interface MergeDealInfo {
+  id: number;
+  name: string;
+  doc_count: number;
+}
+
+export interface MergeConflict {
+  doc_type: string;
+  doc_type_label: string;
+  source_doc: MergeDocInfo;
+  target_doc: MergeDocInfo;
+  recommendation: string; // "keep_source" | "keep_target"
+  reason: string;
+}
+
+export interface MergePreviewResponse {
+  source_deal: MergeDealInfo;
+  target_deal: MergeDealInfo;
+  conflicts: MergeConflict[];
+  documents_to_move: number;
+}
+
+export interface MergeResolution {
+  doc_type: string;
+  keep_doc_id: number;
+}
+
+// ── Worker run types ─────────────────────────────────────────────────────
+
+export interface WorkerProgress {
+  run_id: number;
+  stage: string | null;
+  status: string; // pending | running | completed | failed | cancelled
+  data: Record<string, number>;
+}
+
+export interface WorkerRunHistory {
+  id: number;
+  status: string;
+  current_stage: string | null;
+  progress_data: Record<string, number> | null;
+  error_message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 export const api = {
   /** Redirect browser to Google OAuth */
   loginWithGoogle(): void {
@@ -171,8 +227,22 @@ export const api = {
     total_documents: number;
     processed_documents: number;
     pending_documents: number;
+    is_running: boolean;
+    active_run_id: number | null;
   }> {
     return apiFetch("/sync/status");
+  },
+
+  startPipelineRun(): Promise<{ run_id: number; status: string }> {
+    return apiFetch("/sync/run", { method: "POST" });
+  },
+
+  cancelPipelineRun(): Promise<{ cancelled: boolean }> {
+    return apiFetch("/sync/run/cancel", { method: "POST" });
+  },
+
+  getRunHistory(limit = 20): Promise<WorkerRunHistory[]> {
+    return apiFetch(`/sync/run/history?limit=${limit}`);
   },
 
   getLatestDocuments(): Promise<
@@ -203,6 +273,46 @@ export const api = {
     return apiFetch(`/documents/deals/${dealId}/fields/${fieldName}`, {
       method: "PATCH",
       body: JSON.stringify({ value }),
+    });
+  },
+
+  deleteDeal(dealId: number): Promise<{ deal_id: number; deal_name: string; documents_unlinked: number }> {
+    return apiFetch(`/documents/deals/${dealId}`, { method: "DELETE" });
+  },
+
+  replaceSlotDocument(dealId: number, slotType: string, replacementDocId: number): Promise<DealResponse> {
+    return apiFetch(`/documents/deals/${dealId}/slots/${slotType}`, {
+      method: "PATCH",
+      body: JSON.stringify({ replacement_doc_id: replacementDocId }),
+    });
+  },
+
+  previewMerge(sourceDealId: number, targetDealId: number, newName?: string): Promise<MergePreviewResponse> {
+    return apiFetch("/documents/deals/merge/preview", {
+      method: "POST",
+      body: JSON.stringify({
+        source_deal_id: sourceDealId,
+        target_deal_id: targetDealId,
+        ...(newName ? { new_name: newName } : {}),
+      }),
+    });
+  },
+
+  mergeDeals(sourceDealId: number, targetDealId: number, newName?: string, resolutions?: MergeResolution[]): Promise<{
+    target_deal_id: number;
+    target_deal_name: string;
+    source_deal_id: number;
+    documents_moved: number;
+    documents_superseded: number;
+  }> {
+    return apiFetch("/documents/deals/merge", {
+      method: "POST",
+      body: JSON.stringify({
+        source_deal_id: sourceDealId,
+        target_deal_id: targetDealId,
+        ...(newName ? { new_name: newName } : {}),
+        ...(resolutions?.length ? { resolutions } : {}),
+      }),
     });
   },
 

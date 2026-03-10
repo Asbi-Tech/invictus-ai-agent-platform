@@ -24,6 +24,18 @@ from ..schemas.document_schema import (
     LockedFileWithDeal,
     DealFieldResponse,
     DocumentStatsResponse,
+    DeleteDealResponse,
+    MergeDealRequest,
+    MergeDealResponse,
+    MergePreviewRequest,
+    MergePreviewResponse,
+    ReplaceSlotRequest,
+)
+from ..services.deal_service import (
+    delete_deal as svc_delete_deal,
+    merge_deals as svc_merge_deals,
+    preview_merge as svc_preview_merge,
+    replace_slot as svc_replace_slot,
 )
 from ..utils.auth import get_current_user
 from ..constants import DOC_TYPES as _DOC_TYPES, PIPELINE_TYPES as _PIPELINE_TYPES
@@ -287,15 +299,78 @@ def list_deals(
     return result
 
 
-@router.get("/deals/{deal_id}", response_model=DealResponse)
-@limiter.limit("60/minute")
-def get_deal(
+@router.post("/deals/merge/preview", response_model=MergePreviewResponse)
+@limiter.limit("10/minute")
+def merge_preview(
+    body: MergePreviewRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MergePreviewResponse:
+    """Preview a merge: find conflicts and get LLM recommendations."""
+    result = svc_preview_merge(
+        db,
+        body.source_deal_id,
+        body.target_deal_id,
+        current_user.organization_id,
+        body.new_name,
+    )
+    return MergePreviewResponse(**result)
+
+
+@router.post("/deals/merge", response_model=MergeDealResponse)
+@limiter.limit("30/minute")
+def merge_deals(
+    body: MergeDealRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MergeDealResponse:
+    """Merge source deal into target deal."""
+    resolutions = None
+    if body.resolutions:
+        resolutions = [
+            {"doc_type": r.doc_type, "keep_doc_id": r.keep_doc_id}
+            for r in body.resolutions
+        ]
+    result = svc_merge_deals(
+        db,
+        body.source_deal_id,
+        body.target_deal_id,
+        current_user.organization_id,
+        body.new_name,
+        resolutions,
+    )
+    return MergeDealResponse(**result)
+
+
+@router.delete("/deals/{deal_id}", response_model=DeleteDealResponse)
+@limiter.limit("30/minute")
+def delete_deal(
     deal_id: int,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+) -> DeleteDealResponse:
+    """Delete a deal and unlink its documents."""
+    result = svc_delete_deal(db, deal_id, current_user.organization_id)
+    return DeleteDealResponse(**result)
+
+
+@router.patch("/deals/{deal_id}/slots/{slot_type}", response_model=DealResponse)
+@limiter.limit("30/minute")
+def replace_slot_document(
+    deal_id: int,
+    slot_type: str,
+    body: ReplaceSlotRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> DealResponse:
-    """Return a single deal with its documents and archive."""
+    """Replace the document in a deal's type slot."""
+    svc_replace_slot(
+        db, deal_id, slot_type, body.replacement_doc_id, current_user.organization_id
+    )
     from fastapi import HTTPException
 
     deal = (
@@ -305,6 +380,13 @@ def get_deal(
     )
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
+
+    return _build_deal_response(db, deal)
+
+
+def _build_deal_response(db: Session, deal: Deal) -> DealResponse:
+    """Build a full DealResponse for a single deal (shared by get_deal and replace_slot)."""
+    from fastapi import HTTPException
 
     docs = (
         db.query(Document)
@@ -397,6 +479,28 @@ def get_deal(
         deal_fields=deal_fields,
         locked_files=locked,
     )
+
+
+@router.get("/deals/{deal_id}", response_model=DealResponse)
+@limiter.limit("60/minute")
+def get_deal(
+    deal_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DealResponse:
+    """Return a single deal with its documents and archive."""
+    from fastapi import HTTPException
+
+    deal = (
+        db.query(Deal)
+        .filter(Deal.id == deal_id, Deal.organization_id == current_user.organization_id)
+        .first()
+    )
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    return _build_deal_response(db, deal)
 
 
 class _FieldValueUpdate(BaseModel):
