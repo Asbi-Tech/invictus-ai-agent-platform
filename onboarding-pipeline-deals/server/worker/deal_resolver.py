@@ -5,6 +5,7 @@ Responsible for:
   - Extracting a deal name candidate from a file's Drive folder path (Signal A)
   - Normalizing deal names for deduplication
   - Looking up or creating Deal records in the database
+  - LLM-based deal name clustering (replaces fuzzy string matching)
 
 Signal priority (highest → lowest):
   1. Folder path signal — most reliable; directly reflects how the user organised their Drive
@@ -12,6 +13,7 @@ Signal priority (highest → lowest):
   3. None              — document stored ungrouped ("Uncategorized" in UI)
 """
 
+import json
 import re
 import logging
 import sys
@@ -23,20 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-try:
-    from rapidfuzz import fuzz as _fuzz
-    _RAPIDFUZZ_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _RAPIDFUZZ_AVAILABLE = False
-
 logger = logging.getLogger(__name__)
-
-# Minimum fuzzy similarity (0–100) to consider two deal names the same deal.
-# token_set_ratio handles word reordering and subset matches, e.g.:
-#   "Acme" vs "Acme Robotics"  → ~89
-#   "Beta Health" vs "Beta"    → ~86
-#   "Acme" vs "Zeta Energy"   → ~22
-FUZZY_THRESHOLD = 85
 
 # ── Generic folder names to ignore ───────────────────────────────────────────
 
@@ -117,49 +106,6 @@ def _normalize_key(name: str) -> str:
     return _NON_ALNUM.sub("", name)
 
 
-def _fuzzy_find_deal(existing_deals: list, key: str, raw_name: str):
-    """
-    Scan a pre-fetched list of deals and return the best fuzzy match above
-    FUZZY_THRESHOLD, or None if nothing is close enough.
-
-    Accepts a pre-fetched list so the caller can load deals once and reuse
-    across many documents, avoiding O(N×M) DB queries.
-
-    Uses token_set_ratio on space-preserving names (not smooshed keys) so
-    that word-boundary matching works correctly:
-      "ICG"           vs "ICG Strategic Equity" → 100  ✓ match
-      "Acme"          vs "Acme Robotics"        → ~89  ✓ match
-      "Beta Health"   vs "Beta"                 → ~86  ✓ match
-      "Acme"          vs "Zeta Energy"          → ~22  ✗ no match
-    """
-    if not _RAPIDFUZZ_AVAILABLE or not existing_deals:
-        return None
-
-    best_deal = None
-    best_score = 0
-
-    # Compare space-preserving lowercase names so token_set_ratio can split
-    # on word boundaries (smooshed name_keys like "icgstrategicequity" break
-    # token-based matching).
-    query = _SUFFIX_RE.sub("", raw_name.lower()).strip()
-
-    for deal in existing_deals:
-        compare = _SUFFIX_RE.sub("", deal.name.lower()).strip()
-        score = _fuzz.token_set_ratio(query, compare)
-        if score > best_score:
-            best_score = score
-            best_deal = deal
-
-    if best_score >= FUZZY_THRESHOLD:
-        logger.info(
-            f"Fuzzy match: '{raw_name}' → '{best_deal.name}' "
-            f"(score={best_score}, threshold={FUZZY_THRESHOLD})"
-        )
-        return best_deal
-
-    return None
-
-
 def get_or_create_deal(
     db: Session,
     organization_id: int,
@@ -201,14 +147,6 @@ def get_or_create_deal(
     if deal:
         return deal
 
-    # ── Fuzzy pass: catch near-duplicates before creating a new row ──────────
-    deals_for_fuzzy = existing_deals if existing_deals is not None else (
-        db.query(Deal).filter(Deal.organization_id == organization_id).all()
-    )
-    fuzzy_match = _fuzzy_find_deal(deals_for_fuzzy, key, raw_name)
-    if fuzzy_match:
-        return fuzzy_match
-
     try:
         deal = Deal(
             organization_id=organization_id,
@@ -234,3 +172,81 @@ def get_or_create_deal(
             .filter(Deal.organization_id == organization_id, Deal.name_key == key)
             .first()
         )
+
+
+# ── LLM-based deal name deduplication ────────────────────────────────────────
+
+
+def resolve_deal_names_llm(
+    new_names: list[str],
+    existing_deal_names: list[str],
+) -> dict[str, str]:
+    """
+    Call the LLM to cluster deal names and return a mapping:
+      { raw_name → canonical_name } for every name in new_names.
+
+    Also maps existing DB deal names so the LLM can merge new names into
+    existing deals when appropriate.
+
+    Falls back to identity mapping (no merging) on any error.
+    """
+    from worker.batch_analyzer import _get_llm_client, _get_model_name
+    from worker.prompts.deal_matching import (
+        DEAL_MATCHING_SYSTEM_PROMPT,
+        DEAL_MATCHING_USER_PROMPT,
+    )
+
+    if not new_names:
+        return {}
+
+    # Format the input lists for the prompt
+    new_list = "\n".join(f"- {n}" for n in sorted(set(new_names)))
+    existing_list = (
+        "\n".join(f"- {n}" for n in sorted(set(existing_deal_names)))
+        if existing_deal_names
+        else "(none)"
+    )
+
+    user_prompt = DEAL_MATCHING_USER_PROMPT.format(
+        new_names=new_list,
+        existing_names=existing_list,
+    )
+
+    try:
+        client = _get_llm_client()
+        response = client.chat.completions.create(
+            model=_get_model_name(),
+            messages=[
+                {"role": "system", "content": DEAL_MATCHING_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+            max_completion_tokens=1000,
+        )
+
+        raw = response.choices[0].message.content or "{}"
+        data = json.loads(raw)
+        groups = data.get("groups", [])
+
+        # Build mapping: every member → canonical name
+        mapping: dict[str, str] = {}
+        for group in groups:
+            canonical = group.get("canonical", "")
+            members = group.get("members", [])
+            for member in members:
+                if isinstance(member, str) and member.strip():
+                    mapping[member.strip()] = canonical.strip()
+
+        logger.info(
+            f"LLM deal name dedup: {len(new_names)} names → "
+            f"{len(groups)} groups, mapping={mapping}"
+        )
+        return mapping
+
+    except Exception as exc:
+        logger.warning(
+            f"LLM deal name dedup failed, falling back to identity: {exc}"
+        )
+        # Identity mapping — each name maps to itself (no merging)
+        return {n: n for n in new_names}

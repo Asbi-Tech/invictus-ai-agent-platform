@@ -66,7 +66,7 @@ from worker.drive_ingestion import (
 )
 from worker.parser import extract_text, extract_page_images, PasswordProtectedError
 from worker.batch_analyzer import analyze_batch, AnalysisResult
-from worker.deal_resolver import get_or_create_deal, extract_deal_from_folder_path
+from worker.deal_resolver import get_or_create_deal, extract_deal_from_folder_path, resolve_deal_names_llm
 from worker.vectorizer import ingest_and_analyze_deal, rerun_analytical_and_fields
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -535,10 +535,29 @@ def process_organization(
                 pass
             engine.dispose()  # recycle all pooled connections
 
+        # ── Step 2.5: LLM-based deal name deduplication ────────────────────
+        # Collect all unique deal name candidates from LLM results + folder
+        # paths, then ask the LLM to cluster them into canonical groups.
+        raw_deal_names: set[str] = set()
+        for item in prepared:
+            fid = item["file_meta"]["id"]
+            if fid in llm_results and llm_results[fid].deal_name:
+                raw_deal_names.add(llm_results[fid].deal_name)
+            folder_name = extract_deal_from_folder_path(item["folder_path"])
+            if folder_name:
+                raw_deal_names.add(folder_name)
+
         # ── Step 3: Persist ───────────────────────────────────────────────────
-        # Pre-fetch all deals for this org once — reused by get_or_create_deal
-        # to avoid a DB round-trip per document during fuzzy matching.
+        # Pre-fetch all deals for this org once — reused by get_or_create_deal.
         existing_deals = db.query(Deal).filter(Deal.organization_id == org.id).all()
+
+        existing_deal_names = [d.name for d in existing_deals]
+        if raw_deal_names:
+            deal_name_map = resolve_deal_names_llm(
+                list(raw_deal_names), existing_deal_names
+            )
+        else:
+            deal_name_map = {}
 
         batch_persisted = 0
         for item in prepared:
@@ -563,11 +582,12 @@ def process_organization(
                         folder_path=folder_path or None,
                         status="skipped",
                     )
-                    # Infer deal from first folder component (e.g. "Acme Corp/Q1" → "Acme Corp")
+                    # Infer deal from folder path
                     locked_deal_id: Optional[int] = None
                     if folder_path:
-                        hint = folder_path.split("/")[0].strip()
+                        hint = extract_deal_from_folder_path(folder_path)
                         if hint:
+                            hint = deal_name_map.get(hint, hint)
                             d = get_or_create_deal(
                                 db, org.id, hint, existing_deals, user_id=file_user_id
                             )
@@ -616,6 +636,8 @@ def process_organization(
                     deal_id = None
                     deal_name = raw_deal_name or extract_deal_from_folder_path(folder_path)
                     if deal_name:
+                        # Apply LLM-based canonical name mapping
+                        deal_name = deal_name_map.get(deal_name, deal_name)
                         deal = get_or_create_deal(
                             db, org.id, deal_name, existing_deals, user_id=file_user_id
                         )
