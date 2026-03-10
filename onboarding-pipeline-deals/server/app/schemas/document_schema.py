@@ -149,3 +149,32 @@ class DealResponse(BaseModel):
     deal_fields: list[DealFieldResponse] = []
     # Password-protected files that couldn’t be processed
     locked_files: list[LockedFileDoc] = []
+
+
+# ── Deal management (delete / merge) ─────────────────────────────────────────
+
+
+class DeleteDealResponse(BaseModel):
+    """Response after deleting a deal."""
+
+    deal_id: int
+    deal_name: str
+    documents_unlinked: int
+
+
+class MergeDealRequest(BaseModel):
+    """Request body for merging two deals."""
+
+    source_deal_id: int  # deal to absorb (will be deleted)
+    target_deal_id: int  # deal to keep
+    new_name: Optional[str] = None
+
+
+class MergeDealResponse(BaseModel):
+    """Response after merging two deals."""
+
+    target_deal_id: int
+    target_deal_name: str
+    source_deal_id: int
+    documents_moved: int
+    documents_superseded: int

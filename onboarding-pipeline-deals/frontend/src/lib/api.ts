@@ -206,6 +206,27 @@ export const api = {
     });
   },
 
+  deleteDeal(dealId: number): Promise<{ deal_id: number; deal_name: string; documents_unlinked: number }> {
+    return apiFetch(`/documents/deals/${dealId}`, { method: "DELETE" });
+  },
+
+  mergeDeals(sourceDealId: number, targetDealId: number, newName?: string): Promise<{
+    target_deal_id: number;
+    target_deal_name: string;
+    source_deal_id: number;
+    documents_moved: number;
+    documents_superseded: number;
+  }> {
+    return apiFetch("/documents/deals/merge", {
+      method: "POST",
+      body: JSON.stringify({
+        source_deal_id: sourceDealId,
+        target_deal_id: targetDealId,
+        ...(newName ? { new_name: newName } : {}),
+      }),
+    });
+  },
+
   getDocumentStats(): Promise<{
     total_validated: number;
     shortlisted: number;

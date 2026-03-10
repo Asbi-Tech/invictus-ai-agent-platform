@@ -11,9 +11,27 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ArrowLeft, ExternalLink, FileText, FileType, File, ChevronDown, Lock, Pencil, Check, X } from "lucide-react";
+import { ArrowLeft, ExternalLink, FileText, FileType, File, ChevronDown, Lock, Pencil, Check, X, MoreVertical, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 
 const TYPE_LABELS: Record<string, string> = {
   pitch_deck: "Pitch Deck",
@@ -116,6 +134,8 @@ const DealDetail = () => {
   const [fetching, setFetching] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveFilter, setArchiveFilter] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !user) navigate("/", { replace: true });
@@ -159,10 +179,63 @@ const DealDetail = () => {
 
         {!fetching && deal && (
           <>
-            <h1 className="font-heading text-3xl font-semibold text-foreground">{deal.name}</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {deal.doc_count} of 4 document{deal.doc_count !== 1 ? "s" : ""} available
-            </p>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h1 className="font-heading text-3xl font-semibold text-foreground">{deal.name}</h1>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {deal.doc_count} of 4 document{deal.doc_count !== 1 ? "s" : ""} available
+                </p>
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="mt-1 flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+                    <MoreVertical className="h-4 w-4" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    className="text-red-400 focus:text-red-400"
+                    onClick={() => setDeleteOpen(true)}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete deal
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            {/* Delete confirmation */}
+            <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete "{deal.name}"?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will remove the deal and unlink all its documents. The documents will remain in the system and may be re-grouped on the next processing run. This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+                    disabled={deleting}
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      setDeleting(true);
+                      try {
+                        const res = await api.deleteDeal(deal.id);
+                        toast.success(`Deleted "${res.deal_name}" — ${res.documents_unlinked} document(s) unlinked`);
+                        navigate("/documents", { replace: true });
+                      } catch (err: unknown) {
+                        toast.error(err instanceof Error ? err.message : "Failed to delete deal");
+                        setDeleting(false);
+                      }
+                    }}
+                  >
+                    {deleting ? "Deleting…" : "Delete"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
 
             {/* Analysis metadata */}
             <div className="mt-5 flex flex-wrap items-center gap-3">

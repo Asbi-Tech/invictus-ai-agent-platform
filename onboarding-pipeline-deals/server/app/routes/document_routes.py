@@ -24,6 +24,13 @@ from ..schemas.document_schema import (
     LockedFileWithDeal,
     DealFieldResponse,
     DocumentStatsResponse,
+    DeleteDealResponse,
+    MergeDealRequest,
+    MergeDealResponse,
+)
+from ..services.deal_service import (
+    delete_deal as svc_delete_deal,
+    merge_deals as svc_merge_deals,
 )
 from ..utils.auth import get_current_user
 from ..constants import DOC_TYPES as _DOC_TYPES, PIPELINE_TYPES as _PIPELINE_TYPES
@@ -445,6 +452,38 @@ def update_deal_field(
         value=field.value,
         value_formatted=field.value_formatted,
     )
+
+
+@router.delete("/deals/{deal_id}", response_model=DeleteDealResponse)
+@limiter.limit("30/minute")
+def delete_deal(
+    deal_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DeleteDealResponse:
+    """Delete a deal and unlink its documents."""
+    result = svc_delete_deal(db, deal_id, current_user.organization_id)
+    return DeleteDealResponse(**result)
+
+
+@router.post("/deals/merge", response_model=MergeDealResponse)
+@limiter.limit("30/minute")
+def merge_deals(
+    body: MergeDealRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MergeDealResponse:
+    """Merge source deal into target deal."""
+    result = svc_merge_deals(
+        db,
+        body.source_deal_id,
+        body.target_deal_id,
+        current_user.organization_id,
+        body.new_name,
+    )
+    return MergeDealResponse(**result)
 
 
 @router.get("/locked", response_model=List[LockedFileWithDeal])
