@@ -14,6 +14,7 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   investment_memo: "Investment Memo",
   prescreening_report: "Pre-screening",
   meeting_minutes: "Meeting Minutes",
+  due_diligence_report: "Due Diligence",
 };
 
 const DOC_TYPE_ORDER = [
@@ -21,6 +22,7 @@ const DOC_TYPE_ORDER = [
   "investment_memo",
   "prescreening_report",
   "meeting_minutes",
+  "due_diligence_report",
 ] as const;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

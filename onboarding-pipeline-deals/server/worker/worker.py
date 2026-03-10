@@ -177,12 +177,10 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
         """Return the best available date for ordering: doc_created_date or drive_created_time."""
         return doc.doc_created_date or doc.drive_created_time
 
-    # Split into two buckets
+    # Split into two buckets (include dateless docs — they lose to any dated doc)
     deal_docs: list = []
     folder_docs: list = []
     for doc in processed_docs:
-        if not _effective_date(doc):
-            continue
         if doc.deal_id:
             deal_docs.append(doc)
         elif doc.folder_path:
@@ -197,10 +195,13 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
         a_groups.setdefault(key, []).append(doc)
 
     for (org_id, doc_type, deal_id), docs in a_groups.items():
-        newest = max(docs, key=lambda d: _effective_date(d))
+        dated = [d for d in docs if _effective_date(d)]
+        if not dated:
+            continue  # all dateless — no way to rank, keep all current
+        newest = max(dated, key=lambda d: _effective_date(d))
         newest_date = _effective_date(newest)
         exclude_ids = [d.id for d in docs]
-        # Compare against both doc_created_date and drive_created_time
+        # Supersede pre-existing DB docs: older dated OR dateless (dateless always lose)
         n = (
             db.query(Document)
             .filter(
@@ -218,12 +219,23 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
                         Document.drive_created_time.isnot(None),
                         Document.drive_created_time < newest_date,
                     ),
+                    sqlalchemy.and_(
+                        Document.doc_created_date.is_(None),
+                        Document.drive_created_time.is_(None),
+                    ),
                 ),
                 Document.version_status == "current",
             )
             .update({"version_status": "superseded"}, synchronize_session="fetch")
         )
         total_superseded += n
+
+        # Supersede same-batch losers directly (exclude_ids kept them out of the query)
+        if len(docs) > 1:
+            for doc in docs:
+                if doc.id != newest.id and doc.version_status == "current":
+                    doc.version_status = "superseded"
+                    total_superseded += 1
 
     # Pass B: folder-scoped — group by (org_id, doc_type, folder_path)
     b_groups: dict[tuple, list] = {}
@@ -232,7 +244,10 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
         b_groups.setdefault(key, []).append(doc)
 
     for (org_id, doc_type, folder_path), docs in b_groups.items():
-        newest = max(docs, key=lambda d: _effective_date(d))
+        dated = [d for d in docs if _effective_date(d)]
+        if not dated:
+            continue  # all dateless — no way to rank, keep all current
+        newest = max(dated, key=lambda d: _effective_date(d))
         newest_date = _effective_date(newest)
         exclude_ids = [d.id for d in docs]
         n = (
@@ -253,12 +268,24 @@ def _bulk_mark_superseded(db, processed_docs: list) -> int:
                         Document.drive_created_time.isnot(None),
                         Document.drive_created_time < newest_date,
                     ),
+                    # Dateless docs are always older than any dated doc
+                    sqlalchemy.and_(
+                        Document.doc_created_date.is_(None),
+                        Document.drive_created_time.is_(None),
+                    ),
                 ),
                 Document.version_status == "current",
             )
             .update({"version_status": "superseded"}, synchronize_session="fetch")
         )
         total_superseded += n
+
+        # Supersede same-batch losers directly (exclude_ids kept them out of the query)
+        if len(docs) > 1:
+            for doc in docs:
+                if doc.id != newest.id and doc.version_status == "current":
+                    doc.version_status = "superseded"
+                    total_superseded += 1
 
     if total_superseded:
         db.commit()

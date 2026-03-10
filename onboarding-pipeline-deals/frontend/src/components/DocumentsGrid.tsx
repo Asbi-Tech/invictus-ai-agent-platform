@@ -16,6 +16,7 @@ const TYPE_LABELS: Record<string, string> = {
   investment_memo: "Investment Memo",
   prescreening_report: "Pre-screening",
   meeting_minutes: "Meeting Minutes",
+  due_diligence_report: "Due Diligence",
   other: "Other",
 };
 

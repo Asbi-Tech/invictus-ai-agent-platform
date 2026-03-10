@@ -99,6 +99,7 @@ _TYPE_LABELS: dict[str, str] = {
     "investment_memo": "Investment Memo",
     "prescreening_report": "Prescreening Report",
     "meeting_minutes": "Meeting Minutes",
+    "due_diligence_report": "Due Diligence Report",
 }
 
 

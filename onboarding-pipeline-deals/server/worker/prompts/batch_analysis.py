@@ -23,7 +23,7 @@ OUTPUT_SCHEMA = """
     {
       "custom_id": "<exact custom_id from input>",
       "is_client": "<true if existing portfolio/client file, false if new deal/opportunity being evaluated>",
-      "doc_type": "<one of: pitch_deck | investment_memo | prescreening_report | meeting_minutes | other>",
+      "doc_type": "<one of: pitch_deck | investment_memo | prescreening_report | meeting_minutes | due_diligence_report | other>",
       "deal_name": "<company or deal name, max 3 words, or null>",
       "doc_date": "<YYYY-MM-DD or null>",
       "summary": "<two sentence description of the document>"
@@ -57,11 +57,18 @@ EXCLUDE from `meeting_minutes` — classify as `other` instead:
 - Contains: initial assessment, first look, deal screening, opportunity overview, "next steps: schedule partner meeting", fund thesis fit
 → `prescreening_report`
 
-[T3] INVESTMENT MEMO
-- Contains: financial analysis, due diligence, term sheet, investment recommendation, ARR/MRR, unit economics, LTV/CAC, burn rate, cap table, deal memo
+[T3] DUE DILIGENCE REPORT
+- A third-party or internal due diligence report on a target company
+- Strong signals: "due diligence report", "FDD", "financial due diligence", "DDQ", "due diligence questionnaire", "DD report", "vendor due diligence", "VDD", "buyer due diligence", "BDD"
+- Typically prepared by advisory firms (Deloitte, PwC, EY, KPMG) or internally
+- NOT a due diligence checklist (that is an investment_memo) or DD call notes (that is other)
+→ `due_diligence_report`
+
+[T4] INVESTMENT MEMO
+- Contains: financial analysis, term sheet, investment recommendation, ARR/MRR, unit economics, LTV/CAC, burn rate, cap table, deal memo, due diligence checklist
 → `investment_memo`
 
-[T4] PITCH DECK
+[T5] PITCH DECK
 - Contains: company overview, funding ask, go-to-market, product pitch, market size, founding team, use of proceeds
 → `pitch_deck`
 

@@ -7,6 +7,7 @@ DOC_TYPES: list[str] = [
     "investment_memo",
     "prescreening_report",
     "meeting_minutes",
+    "due_diligence_report",
 ]
 
 # Subset of DOC_TYPES that qualify a deal as a pipeline opportunity.

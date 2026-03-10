@@ -39,6 +39,7 @@ export interface DealDocSlots {
   investment_memo: DealDocSlot | null;
   prescreening_report: DealDocSlot | null;
   meeting_minutes: DealDocSlot | null;
+  due_diligence_report: DealDocSlot | null;
 }
 
 export interface ArchivedDoc {

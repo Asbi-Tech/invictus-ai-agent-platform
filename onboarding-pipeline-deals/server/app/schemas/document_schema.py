@@ -72,12 +72,13 @@ class DealDocSlot(BaseModel):
 
 
 class DealDocSlots(BaseModel):
-    """The 4 canonical document type slots for a deal. None = empty slot."""
+    """The 5 canonical document type slots for a deal. None = empty slot."""
 
     pitch_deck: Optional[DealDocSlot] = None
     investment_memo: Optional[DealDocSlot] = None
     prescreening_report: Optional[DealDocSlot] = None
     meeting_minutes: Optional[DealDocSlot] = None
+    due_diligence_report: Optional[DealDocSlot] = None
 
 
 class ArchivedDoc(BaseModel):

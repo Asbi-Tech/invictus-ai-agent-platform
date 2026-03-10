@@ -65,7 +65,7 @@ from worker.prompts.batch_analysis import (
     OUTPUT_SCHEMA,
 )
 
-VALID_TYPES = {"pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes", "other"}
+VALID_TYPES = {"pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes", "due_diligence_report", "other"}
 
 logger = logging.getLogger(__name__)
 
@@ -286,10 +286,15 @@ def _analyze_chunk(
                 "error_type": type(exc).__name__,
             })
 
-        # If image limit exceeded, retry as text-only so we still get real classification
-        if has_images and ("too many images" in error_str or "max is 50" in error_str):
+        # Retry as text-only when images likely caused the failure:
+        # - image limit exceeded (too many images / max is 50)
+        # - Azure content filter false positive (document images + long prompt trigger jailbreak detection)
+        is_image_limit = "too many images" in error_str or "max is 50" in error_str
+        is_content_filter = "content_filter" in error_str or "content management policy" in error_str
+        if has_images and (is_image_limit or is_content_filter):
+            retry_reason = "content_filter" if is_content_filter else "image_limit_exceeded"
             logger.warning(
-                f"Image limit exceeded for chunk of {len(chunk)} — retrying text-only"
+                f"{retry_reason} for chunk of {len(chunk)} — retrying text-only"
             )
             try:
                 text_content = _build_prompt(chunk, firm_context=custom_prompt)
@@ -297,7 +302,7 @@ def _analyze_chunk(
                 if debug_dir:
                     _write_debug(debug_dir, chunk_idx, "retry_request", {
                         "chunk_idx": chunk_idx,
-                        "retry_reason": "image_limit_exceeded",
+                        "retry_reason": retry_reason,
                         "user_content": text_content,
                     })
 
@@ -392,7 +397,7 @@ IMPORTANT: Documents being EVALUATED for potential investment are always `false`
 - A well-known company name — the question is whether THIS document represents evaluation or portfolio monitoring
 - Financial statements as part of due diligence — DD materials for a potential deal are `false`
 
-**Rule of thumb**: If the document type would be `pitch_deck`, `investment_memo`, or `prescreening_report`, then `is_client` should almost always be `false`.
+**Rule of thumb**: If the document type would be `pitch_deck`, `investment_memo`, `prescreening_report`, or `due_diligence_report`, then `is_client` should almost always be `false`.
 
 **When in doubt, default to `false`** (assume deal/opportunity).
 
@@ -484,7 +489,7 @@ This first look covers Zeta Energy, a clean energy startup seeking seed funding.
   "summary": "Initial prescreening assessment of Zeta Energy, a clean energy startup seeking seed investment. The report finds no major red flags and recommends scheduling a partner meeting."
 }}
 
-### Ex 5: Ambiguous doc — reasoning through type signals
+### Ex 5a: DD checklist — investment_memo, NOT due_diligence_report
 **Input excerpt**:
 Due Diligence Checklist - Gamma Fintech
 Corporate Documents: Certificate of incorporation, cap table, board consents...
@@ -498,7 +503,25 @@ Financial Information: Historical financials, budget, tax returns, debt schedule
   "doc_date": null,
   "summary": "Due diligence checklist for the Gamma Fintech transaction outlining required corporate and financial documentation. The document requests cap table, historical financials, IP portfolio, and legal compliance records by end of week."
 }}
-**Why**: Contains "due diligence", "cap table", "debt schedules" → matches [T3] investment_memo before reaching [T4].
+**Why**: This is a checklist of DD items to collect, NOT a due diligence report with findings/analysis. Checklists → `investment_memo`.
+
+### Ex 5b: FDD report — due_diligence_report
+**Input excerpt** [folder: VENUS_TEST]:
+--- xyz999: Project Venus - Final FDD Report - 22.01.25.pdf [folder: VENUS_TEST] ---
+Final Financial Due Diligence Report
+Transaction Services | 22 January 2025
+Prepared by Deloitte for Gulf Islamic Investments...
+Executive summary, business overview, key findings...
+
+**Output entry**:
+{{
+  "custom_id": "xyz999",
+  "doc_type": "due_diligence_report",
+  "deal_name": "Venus",
+  "doc_date": "2025-01-22",
+  "summary": "Final financial due diligence report for Project Venus prepared by Deloitte, reviewing Hotpack Holding and Investment Limited. The report covers executive summary, business overview, key findings, and appendices from a four-year historical review."
+}}
+**Why**: "Financial Due Diligence Report" by Deloitte — a formal DD report with findings and analysis, not a checklist. Matches [T3] `due_diligence_report`.
 
 ### Ex 6: Call notes — NOT meeting_minutes
 **Input excerpt**:

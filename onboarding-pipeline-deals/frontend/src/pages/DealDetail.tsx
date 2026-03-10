@@ -45,9 +45,10 @@ const TYPE_LABELS: Record<string, string> = {
   investment_memo: "Investment Memo",
   prescreening_report: "Prescreening Report",
   meeting_minutes: "Meeting Minutes",
+  due_diligence_report: "Due Diligence Report",
 };
 
-const DOC_TYPES = ["pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes"] as const;
+const DOC_TYPES = ["pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes", "due_diligence_report"] as const;
 
 function driveUrl(fileId: string) {
   return `https://drive.google.com/file/d/${fileId}/view`;
@@ -209,7 +210,7 @@ const DealDetail = () => {
               <div>
                 <h1 className="font-heading text-3xl font-semibold text-foreground">{deal.name}</h1>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {deal.doc_count} of 4 document{deal.doc_count !== 1 ? "s" : ""} available
+                  {deal.doc_count} of {DOC_TYPES.length} document{deal.doc_count !== 1 ? "s" : ""} available
                 </p>
               </div>
               <DropdownMenu>

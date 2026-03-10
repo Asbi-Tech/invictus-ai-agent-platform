@@ -569,7 +569,7 @@ function DealCard({
 
       {/* Doc type badges */}
       <div className="flex flex-wrap gap-1">
-        {(["pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes"] as const).map(
+        {(["pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes", "due_diligence_report"] as const).map(
           (type) => (
             <span
               key={type}
@@ -600,6 +600,7 @@ const TYPE_SHORT: Record<string, string> = {
   investment_memo: "Memo",
   prescreening_report: "Pre-screen",
   meeting_minutes: "Minutes",
+  due_diligence_report: "DDR",
 };
 
 export default Documents;
