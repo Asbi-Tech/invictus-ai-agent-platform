@@ -151,6 +151,15 @@ class DealResponse(BaseModel):
     locked_files: list[LockedFileDoc] = []
 
 
+# ── Slot replacement ─────────────────────────────────────────────────────────
+
+
+class ReplaceSlotRequest(BaseModel):
+    """Request body for replacing a document in a deal's type slot."""
+
+    replacement_doc_id: int
+
+
 # ── Deal management (delete / merge) ─────────────────────────────────────────
 
 

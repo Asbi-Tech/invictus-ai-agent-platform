@@ -246,6 +246,13 @@ export const api = {
     return apiFetch(`/documents/deals/${dealId}`, { method: "DELETE" });
   },
 
+  replaceSlotDocument(dealId: number, slotType: string, replacementDocId: number): Promise<DealResponse> {
+    return apiFetch(`/documents/deals/${dealId}/slots/${slotType}`, {
+      method: "PATCH",
+      body: JSON.stringify({ replacement_doc_id: replacementDocId }),
+    });
+  },
+
   previewMerge(sourceDealId: number, targetDealId: number, newName?: string): Promise<MergePreviewResponse> {
     return apiFetch("/documents/deals/merge/preview", {
       method: "POST",

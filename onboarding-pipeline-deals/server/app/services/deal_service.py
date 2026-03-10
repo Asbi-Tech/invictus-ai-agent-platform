@@ -1,4 +1,4 @@
-"""Deal management operations: delete and merge."""
+"""Deal management operations: delete, merge, and slot replacement."""
 
 import logging
 import re
@@ -120,6 +120,25 @@ def _best_current_doc_per_type(docs: list[Document]) -> dict[str, Document]:
         ):
             by_type[doc.doc_type] = doc
     return by_type
+
+
+def _clear_deal_analytics(db: Session, deal: Deal, deal_id: int) -> None:
+    """Clear analytical results and vectorizer state so the worker re-processes."""
+    deal.vectorizer_job_id = None
+    deal.investment_type = None
+    deal.deal_status = None
+    deal.deal_reason = None
+
+    db.query(DealField).filter(DealField.deal_id == deal_id).delete(
+        synchronize_session="fetch"
+    )
+    db.query(Document).filter(Document.deal_id == deal_id).update(
+        {"vectorizer_doc_id": None}, synchronize_session="fetch"
+    )
+    db.query(Document).filter(
+        Document.deal_id == deal_id,
+        Document.status == "vectorized",
+    ).update({"status": "processed"}, synchronize_session="fetch")
 
 
 def _fetch_current_docs(db: Session, deal_id: int) -> list[Document]:
@@ -342,26 +361,7 @@ def merge_deals(
         target_deal.name_key = normalized_key
 
     # ── Clear analytical results for re-processing ───────────────────────
-    target_deal.vectorizer_job_id = None
-    target_deal.investment_type = None
-    target_deal.deal_status = None
-    target_deal.deal_reason = None
-
-    # Delete deal fields (will be re-extracted after re-vectorization)
-    db.query(DealField).filter(DealField.deal_id == target_deal_id).delete(
-        synchronize_session="fetch"
-    )
-
-    # Clear vectorizer_doc_id on all merged docs so worker re-vectorizes
-    db.query(Document).filter(Document.deal_id == target_deal_id).update(
-        {"vectorizer_doc_id": None}, synchronize_session="fetch"
-    )
-
-    # Reset vectorized docs back to processed
-    db.query(Document).filter(
-        Document.deal_id == target_deal_id,
-        Document.status == "vectorized",
-    ).update({"status": "processed"}, synchronize_session="fetch")
+    _clear_deal_analytics(db, target_deal, target_deal_id)
 
     # ── Delete source deal (DealField rows cascade) ──────────────────────
     db.delete(source_deal)
@@ -380,3 +380,87 @@ def merge_deals(
         "documents_moved": documents_moved,
         "documents_superseded": documents_superseded,
     }
+
+
+# ── Slot replacement ─────────────────────────────────────────────────────────
+
+
+def replace_slot(
+    db: Session,
+    deal_id: int,
+    slot_type: str,
+    replacement_doc_id: int,
+    organization_id: int,
+) -> None:
+    """
+    Replace the document in a deal's type slot.
+
+    Three cases:
+    A) Replacement is an archived doc of the same type → promote it, demote current.
+    B) Replacement is an archived doc of a different type → reclassify + promote, demote current.
+    C) Replacement is a current doc in another slot → swap doc_type between the two.
+
+    After mutation, analytical results are cleared for re-processing.
+    """
+    if slot_type not in DOC_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid slot type: {slot_type}")
+
+    deal = (
+        db.query(Deal)
+        .filter(Deal.id == deal_id, Deal.organization_id == organization_id)
+        .first()
+    )
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    replacement = (
+        db.query(Document)
+        .filter(
+            Document.id == replacement_doc_id,
+            Document.deal_id == deal_id,
+            Document.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not replacement:
+        raise HTTPException(status_code=404, detail="Replacement document not found")
+
+    # Already the current doc in the target slot?
+    if replacement.doc_type == slot_type and replacement.version_status == "current":
+        raise HTTPException(
+            status_code=409, detail="Document is already in this slot"
+        )
+
+    # Find the current occupant of the target slot (newest by date)
+    current_occupant = (
+        db.query(Document)
+        .filter(
+            Document.deal_id == deal_id,
+            Document.doc_type == slot_type,
+            Document.version_status == "current",
+        )
+        .order_by(Document.doc_created_date.desc().nullslast())
+        .first()
+    )
+
+    if replacement.version_status == "superseded":
+        # Case A or B: promoting an archived doc
+        replacement.doc_type = slot_type
+        replacement.version_status = "current"
+        if current_occupant:
+            current_occupant.version_status = "superseded"
+    elif replacement.version_status == "current" and replacement.doc_type != slot_type:
+        # Case C: swapping with a doc in another slot
+        other_type = replacement.doc_type
+        replacement.doc_type = slot_type
+        if current_occupant:
+            current_occupant.doc_type = other_type
+        # Both remain "current"
+
+    _clear_deal_analytics(db, deal, deal_id)
+    db.commit()
+
+    logger.info(
+        f"Replaced {slot_type} slot in deal {deal_id} ({deal.name!r}) "
+        f"with document {replacement_doc_id}"
+    )
