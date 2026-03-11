@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from .organization import Organization
     from .user import User
     from .deal import Deal
+    from .worker_run import WorkerRun
 
 
 class Document(Base):
@@ -40,6 +41,10 @@ class Document(Base):
     version_status: Mapped[str] = mapped_column(String, default="current", nullable=False)
     # External vectorizer pipeline doc ID (assigned by Invitus AI Insights after ingestion)
     vectorizer_doc_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Which pipeline run created this document (nullable for docs created before this column)
+    worker_run_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("worker_runs.id"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -49,6 +54,7 @@ class Document(Base):
     )
     user: Mapped["User"] = relationship("User", back_populates="documents")
     deal: Mapped[Optional["Deal"]] = relationship("Deal", back_populates="documents")
+    worker_run: Mapped[Optional["WorkerRun"]] = relationship("WorkerRun", backref="documents")
 
     __table_args__ = (
         # (organization_id, file_id) — unique per org; same Drive file shared by org members = one row

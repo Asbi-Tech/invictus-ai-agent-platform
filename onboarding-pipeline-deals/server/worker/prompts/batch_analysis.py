@@ -58,14 +58,15 @@ EXCLUDE from `meeting_minutes` — classify as `other` instead:
 → `prescreening_report`
 
 [T3] DUE DILIGENCE REPORT
-- A third-party or internal due diligence report on a target company
+- A third-party or internal due diligence report, questionnaire, or response document
 - Strong signals: "due diligence report", "FDD", "financial due diligence", "DDQ", "due diligence questionnaire", "DD report", "vendor due diligence", "VDD", "buyer due diligence", "BDD"
-- Typically prepared by advisory firms (Deloitte, PwC, EY, KPMG) or internally
-- NOT a due diligence checklist (that is an investment_memo) or DD call notes (that is other)
+- Includes: formal DD reports (by Deloitte, PwC, etc.), DDQ questionnaires (forms requesting or providing fund/company data), and DDQ responses
+- NOT DD call notes (that is `other`)
 → `due_diligence_report`
 
 [T4] INVESTMENT MEMO
-- Contains: financial analysis, term sheet, investment recommendation, ARR/MRR, unit economics, LTV/CAC, burn rate, cap table, deal memo, due diligence checklist
+- Contains: financial analysis, term sheet, investment recommendation, ARR/MRR, unit economics, LTV/CAC, burn rate, cap table, deal memo
+- Also includes: internal DD checklists (lists of items to collect/verify — NOT questionnaires)
 → `investment_memo`
 
 [T5] PITCH DECK

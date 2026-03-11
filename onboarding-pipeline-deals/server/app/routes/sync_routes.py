@@ -13,6 +13,7 @@ from ..config import settings
 from ..database import SessionLocal, get_db
 from ..models.user import User
 from ..models.document import Document
+from ..models.deal import Deal
 from ..models.worker_run import WorkerRun
 from ..services.worker_run_manager import worker_run_manager
 from ..utils.auth import get_current_user
@@ -228,3 +229,65 @@ def get_run_history(
         }
         for r in runs
     ]
+
+
+@router.get("/run/{run_id}/files")
+@limiter.limit("30/minute")
+def get_run_files(
+    run_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return run metadata and per-file classification details for a specific run."""
+    if current_user.organization_id is None:
+        raise HTTPException(status_code=403, detail="No organization assigned")
+
+    run = (
+        db.query(WorkerRun)
+        .filter(
+            WorkerRun.id == run_id,
+            WorkerRun.organization_id == current_user.organization_id,
+        )
+        .first()
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # Fetch all documents created by this run, joined with deal name
+    rows = (
+        db.query(Document, Deal.name)
+        .outerjoin(Deal, Document.deal_id == Deal.id)
+        .filter(Document.worker_run_id == run_id)
+        .order_by(Document.id)
+        .all()
+    )
+
+    files = []
+    for doc, deal_name in rows:
+        files.append({
+            "id": doc.id,
+            "file_name": doc.file_name,
+            "file_id": doc.file_id,
+            "doc_type": doc.doc_type,
+            "status": doc.status,
+            "deal_id": doc.deal_id,
+            "deal_name": deal_name,
+            "folder_path": doc.folder_path,
+            "description": doc.description,
+            "doc_date": doc.doc_created_date.strftime("%Y-%m-%d") if doc.doc_created_date else None,
+            "version_status": doc.version_status,
+        })
+
+    return {
+        "run": {
+            "id": run.id,
+            "status": run.status,
+            "current_stage": run.current_stage,
+            "progress_data": run.progress_data,
+            "error_message": run.error_message,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        },
+        "files": files,
+    }

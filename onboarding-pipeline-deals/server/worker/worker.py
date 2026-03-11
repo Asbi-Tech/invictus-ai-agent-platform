@@ -301,6 +301,7 @@ def process_organization(
     users: list[User],
     progress_callback: Callable[[str, dict], None] | None = None,
     cancel_event: threading.Event | None = None,
+    run_id: int | None = None,
 ) -> _RunStats:
     """
     Run the full ingestion pipeline for an organization.
@@ -581,6 +582,7 @@ def process_organization(
                         doc_type="password_protected",
                         folder_path=folder_path or None,
                         status="skipped",
+                        worker_run_id=run_id,
                     )
                     # Infer deal from folder path
                     locked_deal_id: Optional[int] = None
@@ -656,6 +658,7 @@ def process_organization(
                     deal_id=deal_id,
                     folder_path=folder_path or None,
                     status=final_status,
+                    worker_run_id=run_id,
                 )
                 db.add(doc)
                 db.commit()
@@ -899,6 +902,7 @@ def _process_org_isolated(
     org_id: int,
     progress_callback: Callable[[str, dict], None] | None = None,
     cancel_event: threading.Event | None = None,
+    run_id: int | None = None,
 ) -> Optional[_RunStats]:
     """Process a single organization in an isolated DB session (safe for threads)."""
     db = SessionLocal()
@@ -925,6 +929,7 @@ def _process_org_isolated(
             db, org, org_users,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
+            run_id=run_id,
         )
     except _OrgTimeoutError as exc:
         logger.warning(

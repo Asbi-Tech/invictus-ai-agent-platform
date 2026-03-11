@@ -154,6 +154,7 @@ class WorkerRunManager:
                     org_id, run_id, stage, data
                 ),
                 cancel_event=cancel_event,
+                run_id=run_id,
             )
 
             # Completed successfully
