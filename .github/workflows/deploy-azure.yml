@@ -1,0 +1,59 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "onboarding-pipeline-deals/server/**"
+      - ".github/workflows/deploy-azure.yml"
+  workflow_dispatch:
+
+env:
+  ACR_NAME: acrinvictusdeals
+  RESOURCE_GROUP: IDT-MVP
+  API_APP: ca-invictus-api
+  IMAGE_NAME: invictus-api
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Log in to ACR
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: onboarding-pipeline-deals/server
+          file: onboarding-pipeline-deals/server/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:latest
+
+      - name: Deploy to Container App
+        run: |
+          az containerapp update \
+            --name ${{ env.API_APP }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image "${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+
+      - name: Verify deployment
+        run: |
+          FQDN=$(az containerapp show \
+            --name ${{ env.API_APP }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$FQDN/health")
+            [ "$STATUS" = "200" ] && echo "Healthy at https://$FQDN" && exit 0
+            echo "Attempt $i: status=$STATUS"; sleep 10
+          done
+          echo "Health check failed"; exit 1

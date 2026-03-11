@@ -9,7 +9,7 @@ engine = create_engine(
     pool_pre_ping=True,       # test connections before handing to a request
     pool_size=10,             # keep 10 connections open at steady state
     max_overflow=20,          # allow up to 20 extra under burst load
-    pool_recycle=300,         # recycle connections every 5 min (Railway proxy drops idle ~10 min)
+    pool_recycle=300,         # recycle connections every 5 min
     pool_timeout=30,          # raise after 30 s if no connection is available
     connect_args={
         "keepalives": 1,
