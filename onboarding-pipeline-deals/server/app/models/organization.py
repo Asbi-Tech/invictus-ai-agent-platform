@@ -27,6 +27,8 @@ class Organization(Base):
     vectorization_limit: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="800"
     )
+    # RAG Gateway tenant ID (overrides VECTORIZER_TENANT_ID env var)
+    tenant_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -18,6 +18,8 @@ const Settings = () => {
   const [classificationLimit, setClassificationLimit] = useState("");
   const [vectorizationLimit, setVectorizationLimit] = useState("");
   const [isSavingLimits, setIsSavingLimits] = useState(false);
+  const [tenantId, setTenantId] = useState("");
+  const [isSavingTenantId, setIsSavingTenantId] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !user) navigate("/", { replace: true });
@@ -29,11 +31,32 @@ const Settings = () => {
         setQuota(q);
         setClassificationLimit(String(q.classification_limit));
         setVectorizationLimit(String(q.vectorization_limit));
+        setTenantId(q.tenant_id ?? "");
       }).catch(() => {});
     }
   }, [user?.organization_id]);
 
   if (isLoading || !user) return null;
+
+  const handleSaveTenantId = async () => {
+    setIsSavingTenantId(true);
+    try {
+      const updated = await api.updateOrgSettings({
+        tenant_id: tenantId.trim() || null,
+      });
+      setQuota(updated);
+      setTenantId(updated.tenant_id ?? "");
+      toast({ title: "Tenant ID updated" });
+    } catch (err: unknown) {
+      toast({
+        title: "Failed to save",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSavingTenantId(false);
+    }
+  };
 
   const handleSaveLimits = async () => {
     const cLimit = parseInt(classificationLimit, 10);
@@ -150,6 +173,43 @@ const Settings = () => {
                   className="bg-primary text-primary-foreground hover:bg-accent"
                 >
                   {isSavingLimits ? "Saving…" : "Save Limits"}
+                </Button>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* RAG Configuration */}
+        {quota && (
+          <section className="mt-10">
+            <h2 className="font-heading text-lg font-medium text-foreground">RAG Configuration</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Configure the tenant identifier used for vectorization and RAG Gateway integration.
+            </p>
+            <div className="mt-4 rounded-md border border-border p-4 space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="tenant-id" className="text-sm text-muted-foreground">
+                  Tenant ID
+                </Label>
+                <Input
+                  id="tenant-id"
+                  type="text"
+                  placeholder="e.g. onboarding-testing-t1"
+                  value={tenantId}
+                  onChange={(e) => setTenantId(e.target.value)}
+                  className="border-border bg-background text-foreground"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Tenant identifier for the RAG Gateway. Used during document vectorization and analytical extraction.
+                </p>
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  onClick={handleSaveTenantId}
+                  disabled={isSavingTenantId}
+                  className="bg-primary text-primary-foreground hover:bg-accent"
+                >
+                  {isSavingTenantId ? "Saving..." : "Save Tenant ID"}
                 </Button>
               </div>
             </div>

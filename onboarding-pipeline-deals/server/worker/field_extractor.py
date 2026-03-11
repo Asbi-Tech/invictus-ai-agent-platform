@@ -79,7 +79,7 @@ def _to_str(value) -> Optional[str]:
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def extract_deal_fields(db, deal, ext_doc_ids: list[str]) -> bool:
+def extract_deal_fields(db, deal, ext_doc_ids: list[str], *, tenant_id: str | None = None) -> bool:
     """
     Call POST /api/ExtractFields for the deal's investment_type,
     delete any existing deal_fields rows for this deal, and insert fresh ones.
@@ -104,6 +104,7 @@ def extract_deal_fields(db, deal, ext_doc_ids: list[str]) -> bool:
         return False
 
     s = _cfg()
+    resolved_tenant_id = tenant_id or s.VECTORIZER_TENANT_ID
     url = f"{s.VECTORIZER_ANALYTICAL_URL}/api/ExtractFields"
 
     # Build the fields payload — one entry per field definition
@@ -118,7 +119,7 @@ def extract_deal_fields(db, deal, ext_doc_ids: list[str]) -> bool:
     ]
 
     body = {
-        "tenant_id": s.VECTORIZER_TENANT_ID,
+        "tenant_id": resolved_tenant_id,
         "doc_ids": ext_doc_ids,
         "fields": fields_payload,
         "retrieval_config": {
