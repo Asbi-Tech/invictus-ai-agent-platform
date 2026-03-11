@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Play, Square, ChevronDown, ChevronUp, Clock, CheckCircle2, XCircle, Ban } from "lucide-react";
 import { toast } from "sonner";
@@ -87,6 +88,7 @@ function formatTimeAgo(iso: string | null): string {
 
 const SyncStatusCard = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   // Sync status
   const [syncStatus, setSyncStatus] = useState<{
@@ -360,7 +362,8 @@ const SyncStatusCard = () => {
                 {history.map((run) => (
                   <div
                     key={run.id}
-                    className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-2 text-xs"
+                    onClick={() => navigate(`/runs/${run.id}`)}
+                    className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-2 text-xs cursor-pointer hover:bg-muted transition-colors"
                   >
                     <div className="flex items-center gap-2">
                       <RunStatusIcon status={run.status} />

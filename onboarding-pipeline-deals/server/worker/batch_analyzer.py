@@ -503,7 +503,7 @@ Financial Information: Historical financials, budget, tax returns, debt schedule
   "doc_date": null,
   "summary": "Due diligence checklist for the Gamma Fintech transaction outlining required corporate and financial documentation. The document requests cap table, historical financials, IP portfolio, and legal compliance records by end of week."
 }}
-**Why**: This is a checklist of DD items to collect, NOT a due diligence report with findings/analysis. Checklists → `investment_memo`.
+**Why**: This is an internal checklist of DD items to collect (corporate docs, financials, etc.) — NOT a questionnaire sent to/from a target. Internal DD checklists → `investment_memo`. Questionnaires (DDQs) → `due_diligence_report`.
 
 ### Ex 5b: FDD report — due_diligence_report
 **Input excerpt** [folder: VENUS_TEST]:
@@ -522,6 +522,24 @@ Executive summary, business overview, key findings...
   "summary": "Final financial due diligence report for Project Venus prepared by Deloitte, reviewing Hotpack Holding and Investment Limited. The report covers executive summary, business overview, key findings, and appendices from a four-year historical review."
 }}
 **Why**: "Financial Due Diligence Report" by Deloitte — a formal DD report with findings and analysis, not a checklist. Matches [T3] `due_diligence_report`.
+
+### Ex 5c: DDQ (questionnaire) — due_diligence_report, NOT investment_memo
+**Input excerpt** [folder: ICG_TEST]:
+--- def456: Delivrables - DDQ 1.pdf [folder: ICG_TEST] ---
+ICGSE Fund V ("ICGSE" or "ICG") – Due Diligence Questionnaire
+Information Requests and Clarifications
+1. Historical track record data for all prior funds...
+2. Detailed fund model assumptions...
+
+**Output entry**:
+{{
+  "custom_id": "def456",
+  "doc_type": "due_diligence_report",
+  "deal_name": "ICG",
+  "doc_date": null,
+  "summary": "Due diligence questionnaire for ICG Strategic Equity Fund V requesting detailed data on portfolio companies and investment metrics. The document outlines specific clarifications needed for historical track records, fund models, and diligence depth."
+}}
+**Why**: Title says "Due Diligence Questionnaire" — a DDQ requesting fund/company data is [T3] `due_diligence_report`, NOT an investment memo. DDQs are questionnaires, not internal checklists.
 
 ### Ex 6: Call notes — NOT meeting_minutes
 **Input excerpt**:

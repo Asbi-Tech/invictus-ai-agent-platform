@@ -191,6 +191,25 @@ export interface WorkerRunHistory {
   finished_at: string | null;
 }
 
+export interface RunFileDetail {
+  id: number;
+  file_name: string;
+  file_id: string;
+  doc_type: string;
+  status: string;
+  deal_id: number | null;
+  deal_name: string | null;
+  folder_path: string | null;
+  description: string | null;
+  doc_date: string | null;
+  version_status: string;
+}
+
+export interface RunDetailResponse {
+  run: WorkerRunHistory;
+  files: RunFileDetail[];
+}
+
 export const api = {
   /** Redirect browser to Google OAuth */
   loginWithGoogle(): void {
@@ -243,6 +262,10 @@ export const api = {
 
   getRunHistory(limit = 20): Promise<WorkerRunHistory[]> {
     return apiFetch(`/sync/run/history?limit=${limit}`);
+  },
+
+  getRunDetail(runId: number): Promise<RunDetailResponse> {
+    return apiFetch(`/sync/run/${runId}/files`);
   },
 
   getLatestDocuments(): Promise<

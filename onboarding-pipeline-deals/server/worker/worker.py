@@ -66,7 +66,7 @@ from worker.drive_ingestion import (
 )
 from worker.parser import extract_text, extract_page_images, PasswordProtectedError
 from worker.batch_analyzer import analyze_batch, AnalysisResult
-from worker.deal_resolver import get_or_create_deal, extract_deal_from_folder_path, resolve_deal_names_llm
+from worker.deal_resolver import get_or_create_deal, extract_deal_from_folder_path, resolve_deal_names_llm, pre_merge_by_folder
 from worker.vectorizer import ingest_and_analyze_deal, rerun_analytical_and_fields
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -301,6 +301,7 @@ def process_organization(
     users: list[User],
     progress_callback: Callable[[str, dict], None] | None = None,
     cancel_event: threading.Event | None = None,
+    run_id: int | None = None,
 ) -> _RunStats:
     """
     Run the full ingestion pipeline for an organization.
@@ -537,27 +538,41 @@ def process_organization(
 
         # ── Step 2.5: LLM-based deal name deduplication ────────────────────
         # Collect all unique deal name candidates from LLM results + folder
-        # paths, then ask the LLM to cluster them into canonical groups.
-        raw_deal_names: set[str] = set()
+        # paths, recording which folder each name came from.
+        name_to_folder: dict[str, str | None] = {}
         for item in prepared:
             fid = item["file_meta"]["id"]
+            folder_path = item["folder_path"]
             if fid in llm_results and llm_results[fid].deal_name:
-                raw_deal_names.add(llm_results[fid].deal_name)
-            folder_name = extract_deal_from_folder_path(item["folder_path"])
-            if folder_name:
-                raw_deal_names.add(folder_name)
+                llm_name = llm_results[fid].deal_name
+                # Keep the first folder association seen for each name
+                if llm_name not in name_to_folder:
+                    name_to_folder[llm_name] = folder_path
+            folder_name = extract_deal_from_folder_path(folder_path)
+            if folder_name and folder_name not in name_to_folder:
+                name_to_folder[folder_name] = folder_path
+
+        # Deterministic pre-merge: group names from the same folder
+        if name_to_folder:
+            pre_merge_map, reduced_names = pre_merge_by_folder(name_to_folder)
+        else:
+            pre_merge_map, reduced_names = {}, []
 
         # ── Step 3: Persist ───────────────────────────────────────────────────
         # Pre-fetch all deals for this org once — reused by get_or_create_deal.
         existing_deals = db.query(Deal).filter(Deal.organization_id == org.id).all()
 
         existing_deal_names = [d.name for d in existing_deals]
-        if raw_deal_names:
-            deal_name_map = resolve_deal_names_llm(
-                list(raw_deal_names), existing_deal_names
-            )
+        if reduced_names:
+            llm_map = resolve_deal_names_llm(reduced_names, existing_deal_names)
         else:
-            deal_name_map = {}
+            llm_map = {}
+
+        # Compose final mapping: original name → pre-merge rep → LLM canonical
+        deal_name_map: dict[str, str] = {}
+        for original_name, representative in pre_merge_map.items():
+            canonical = llm_map.get(representative, representative)
+            deal_name_map[original_name] = canonical
 
         batch_persisted = 0
         for item in prepared:
@@ -581,6 +596,7 @@ def process_organization(
                         doc_type="password_protected",
                         folder_path=folder_path or None,
                         status="skipped",
+                        worker_run_id=run_id,
                     )
                     # Infer deal from folder path
                     locked_deal_id: Optional[int] = None
@@ -656,6 +672,7 @@ def process_organization(
                     deal_id=deal_id,
                     folder_path=folder_path or None,
                     status=final_status,
+                    worker_run_id=run_id,
                 )
                 db.add(doc)
                 db.commit()
@@ -899,6 +916,7 @@ def _process_org_isolated(
     org_id: int,
     progress_callback: Callable[[str, dict], None] | None = None,
     cancel_event: threading.Event | None = None,
+    run_id: int | None = None,
 ) -> Optional[_RunStats]:
     """Process a single organization in an isolated DB session (safe for threads)."""
     db = SessionLocal()
@@ -925,6 +943,7 @@ def _process_org_isolated(
             db, org, org_users,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
+            run_id=run_id,
         )
     except _OrgTimeoutError as exc:
         logger.warning(

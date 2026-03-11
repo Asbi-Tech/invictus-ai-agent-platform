@@ -174,6 +174,62 @@ def get_or_create_deal(
         )
 
 
+# ── Deterministic pre-merge by folder ────────────────────────────────────────
+
+
+def pre_merge_by_folder(
+    name_to_folder: dict[str, str | None],
+) -> tuple[dict[str, str], list[str]]:
+    """
+    Deterministically group deal names that share the same folder origin.
+
+    Args:
+        name_to_folder: mapping of {deal_name → folder_path} (folder may be None).
+
+    Returns:
+        (pre_merge_map, reduced_names) where:
+          - pre_merge_map maps every original name to its representative
+          - reduced_names is the deduplicated list of representatives to send to the LLM
+
+    Within each folder group, the shortest name is chosen as the representative
+    (e.g. "ICG" wins over "ICG Strategic Equity" when both come from ICG_TEST).
+    """
+    # Group names by their normalized folder key
+    folder_groups: dict[str, list[str]] = {}
+    no_folder: list[str] = []
+
+    for name, folder_path in name_to_folder.items():
+        folder_deal = extract_deal_from_folder_path(folder_path) if folder_path else None
+        if folder_deal:
+            folder_key = _normalize_key(folder_deal)
+            folder_groups.setdefault(folder_key, []).append(name)
+        else:
+            no_folder.append(name)
+
+    pre_merge_map: dict[str, str] = {}
+    representatives: set[str] = set()
+
+    # For each folder group, pick the shortest name as representative
+    for _folder_key, names in folder_groups.items():
+        representative = min(names, key=len)
+        for name in names:
+            pre_merge_map[name] = representative
+        representatives.add(representative)
+
+    # Names without a folder pass through as-is
+    for name in no_folder:
+        pre_merge_map[name] = name
+        representatives.add(name)
+
+    reduced_names = sorted(representatives)
+
+    logger.info(
+        f"Pre-merge by folder: {len(name_to_folder)} names → "
+        f"{len(reduced_names)} representatives, pre_merge_map={pre_merge_map}"
+    )
+    return pre_merge_map, reduced_names
+
+
 # ── LLM-based deal name deduplication ────────────────────────────────────────
 
 
