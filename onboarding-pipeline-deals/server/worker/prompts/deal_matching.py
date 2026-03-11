@@ -26,8 +26,9 @@ existing deal names already in the database.
 4. Do NOT merge names that are clearly different companies.
 5. Project codenames (e.g. "Project Venus") should map to the company name if known
    from context, otherwise keep the codename.
-6. When in doubt, do NOT merge — it is safer to keep names separate than to
-   incorrectly combine different companies.
+6. When in doubt and names share no obvious relationship, keep them separate.
+   But DO merge when one name is clearly a longer form of another
+   (e.g. "ICG" and "ICG Strategic Equity" are the same deal — use "ICG").
 
 ## INPUT
 
