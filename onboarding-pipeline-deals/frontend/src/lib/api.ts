@@ -128,6 +128,7 @@ export interface OrgQuotaResponse {
   vectorization_limit: number;
   member_count: number;
   processing_timeout_hours: number;
+  tenant_id: string | null;
 }
 
 export interface OrgListItem {
@@ -376,6 +377,7 @@ export const api = {
     custom_prompt?: string | null;
     classification_limit?: number;
     vectorization_limit?: number;
+    tenant_id?: string | null;
   }): Promise<OrgQuotaResponse> {
     return apiFetch("/org/settings", {
       method: "PATCH",

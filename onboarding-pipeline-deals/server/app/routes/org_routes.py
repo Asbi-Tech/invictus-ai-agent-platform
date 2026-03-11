@@ -249,6 +249,7 @@ def get_my_org(
         member_count=member_count,
         custom_prompt=org.custom_prompt,
         processing_timeout_hours=settings.ORG_PROCESSING_TIMEOUT_HOURS,
+        tenant_id=org.tenant_id,
     )
 
 
@@ -278,6 +279,8 @@ def update_org_settings(
         if body.vectorization_limit < 0:
             raise HTTPException(status_code=400, detail="Vectorization limit must be non-negative")
         org.vectorization_limit = body.vectorization_limit
+    if body.tenant_id is not None:
+        org.tenant_id = body.tenant_id.strip() or None
 
     db.commit()
     db.refresh(org)
@@ -294,4 +297,5 @@ def update_org_settings(
         member_count=member_count,
         custom_prompt=org.custom_prompt,
         processing_timeout_hours=settings.ORG_PROCESSING_TIMEOUT_HOURS,
+        tenant_id=org.tenant_id,
     )

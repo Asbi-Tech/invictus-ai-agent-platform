@@ -16,6 +16,7 @@ class OrgSettingsUpdate(BaseModel):
     custom_prompt: Optional[str] = None
     classification_limit: Optional[int] = None
     vectorization_limit: Optional[int] = None
+    tenant_id: Optional[str] = None
 
 
 class OrgResponse(BaseModel):
@@ -38,6 +39,7 @@ class OrgQuotaResponse(BaseModel):
     member_count: int
     custom_prompt: Optional[str] = None
     processing_timeout_hours: float
+    tenant_id: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

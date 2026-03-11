@@ -137,7 +137,7 @@ def _unique_name(doc_type: str, original_name: str) -> str:
 
 # ── Stage 1 ───────────────────────────────────────────────────────────────────
 
-def _create_ingestion_job(docs: list, user_id: int) -> dict | None:
+def _create_ingestion_job(docs: list, user_id: int, tenant_id: str) -> dict | None:
     """
     POST /v1/api/ingestions.
 
@@ -154,7 +154,7 @@ def _create_ingestion_job(docs: list, user_id: int) -> dict | None:
     ]
 
     body = {
-        "tenant_id": s.VECTORIZER_TENANT_ID,
+        "tenant_id": tenant_id,
         "region": s.VECTORIZER_REGION,
         "module_id": s.VECTORIZER_MODULE_ID,
         "use_case_id": s.VECTORIZER_USE_CASE_ID,
@@ -306,6 +306,7 @@ def _poll_job(job_id: str) -> dict[str, str] | None:
 
 def _run_analytical(
     ext_doc_ids: list[str],
+    tenant_id: str,
 ) -> tuple[str | None, str | None, str | None]:
     """
     POST /api/Analytical with two fields:
@@ -317,7 +318,7 @@ def _run_analytical(
     """
     s = _cfg()
     payload = {
-        "tenant_id": s.VECTORIZER_TENANT_ID,
+        "tenant_id": tenant_id,
         "doc_ids": ext_doc_ids,
         "fields": [
             {
@@ -446,6 +447,14 @@ def _run_analytical(
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+def _resolve_tenant_id(deal) -> str | None:
+    """Return the org-level tenant_id, falling back to the env var."""
+    org_tid = getattr(deal, "organization", None)
+    if org_tid is not None:
+        org_tid = getattr(org_tid, "tenant_id", None)
+    return org_tid or _cfg().VECTORIZER_TENANT_ID
+
+
 def ingest_and_analyze_deal(db, user, deal, docs: list) -> None:
     """
     Full vectorizer + analytical pipeline for a single deal.
@@ -469,6 +478,14 @@ def ingest_and_analyze_deal(db, user, deal, docs: list) -> None:
     if not docs:
         return
 
+    tenant_id = _resolve_tenant_id(deal)
+    if not tenant_id:
+        logger.error(
+            f"[vectorizer] Deal {deal.id} ({deal.name!r}): "
+            "no tenant_id configured (set in org settings or VECTORIZER_TENANT_ID env var)"
+        )
+        return
+
     # Pre-fetch Drive credentials once to avoid a round-trip per file
     try:
         credentials = get_user_drive_credentials(user)
@@ -480,7 +497,7 @@ def ingest_and_analyze_deal(db, user, deal, docs: list) -> None:
         credentials = None
 
     # ── Stage 1: Create ingestion job ─────────────────────────────────────────
-    job_info = _create_ingestion_job(docs, user.id)
+    job_info = _create_ingestion_job(docs, user.id, tenant_id)
     if job_info is None:
         logger.error(
             f"[vectorizer] Deal {deal.id} ({deal.name!r}): job creation failed"
@@ -585,7 +602,7 @@ def ingest_and_analyze_deal(db, user, deal, docs: list) -> None:
         return
 
     # ── Stage 6: Analytical endpoint ──────────────────────────────────────────
-    investment_type, deal_status, deal_reason = _run_analytical(ext_ids_completed)
+    investment_type, deal_status, deal_reason = _run_analytical(ext_ids_completed, tenant_id)
 
     deal.investment_type = investment_type
     deal.deal_status = deal_status
@@ -606,7 +623,7 @@ def ingest_and_analyze_deal(db, user, deal, docs: list) -> None:
     ext_ids_for_extraction = list(ext_ids_completed)
 
     if deal.investment_type and ext_ids_for_extraction:
-        extract_deal_fields(db, deal, ext_ids_for_extraction)
+        extract_deal_fields(db, deal, ext_ids_for_extraction, tenant_id=tenant_id)
     else:
         logger.info(
             f"[vectorizer] Deal {deal.id}: skipping field extraction "
@@ -633,6 +650,14 @@ def rerun_analytical_and_fields(db, deal) -> None:
     from app.models.deal_field import DealField
     from worker.field_extractor import extract_deal_fields
 
+    tenant_id = _resolve_tenant_id(deal)
+    if not tenant_id:
+        logger.error(
+            f"[vectorizer] Deal {deal.id} ({deal.name!r}): "
+            "no tenant_id configured — cannot re-analyze"
+        )
+        return
+
     # Gather all docs for this deal that completed vectorization
     docs = (
         db.query(Document)
@@ -658,7 +683,7 @@ def rerun_analytical_and_fields(db, deal) -> None:
             f"[vectorizer] Deal {deal.id} ({deal.name!r}): "
             f"re-running Stage 6 (Analytical) with {len(ext_ids_all)} doc(s)"
         )
-        investment_type, deal_status, deal_reason = _run_analytical(ext_ids_all)
+        investment_type, deal_status, deal_reason = _run_analytical(ext_ids_all, tenant_id)
         deal.investment_type = investment_type
         deal.deal_status = deal_status
         deal.deal_reason = deal_reason
@@ -687,7 +712,7 @@ def rerun_analytical_and_fields(db, deal) -> None:
                     f"re-running Stage 7 (ExtractFields) with "
                     f"{len(ext_ids_for_extraction)} doc(s)"
                 )
-                extract_deal_fields(db, deal, ext_ids_for_extraction)
+                extract_deal_fields(db, deal, ext_ids_for_extraction, tenant_id=tenant_id)
             else:
                 logger.info(
                     f"[vectorizer] Deal {deal.id} ({deal.name!r}): "

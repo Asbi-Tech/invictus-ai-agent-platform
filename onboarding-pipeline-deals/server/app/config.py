@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     VECTORIZER_FUNCTION_KEY: Optional[str] = None
     # Azure Functions host key for the RAG / Analytical endpoint (if different)
     RAG_FUNCTION_KEY: Optional[str] = None
-    # Tenant identifier assigned to your organisation
+    # Tenant identifier — fallback when the org has no tenant_id set in Settings UI
     VECTORIZER_TENANT_ID: Optional[str] = None
     # Deployment region tag sent in the ingestion payload
     VECTORIZER_REGION: str = "uae"
